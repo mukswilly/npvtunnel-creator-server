@@ -1,0 +1,110 @@
+package main
+
+// JSON shapes that mirror the NpvTunnel client's issuance messages. Keep
+// these in sync — adding a field on either side is non-breaking; renaming or
+// removing requires a protocol-version bump.
+
+// ──────────────────────────────────────────────────────────────────
+// Phase 3 issuance — POST /v1/issue
+// ──────────────────────────────────────────────────────────────────
+
+// AttestationBlob mirrors the client's attestation blob on the client side.
+// The field is parsed but not verified — real Play Integrity /
+// App Attest verification arrives later.
+type AttestationBlob struct {
+	Platform string `json:"platform"` // "ANDROID" | "IOS" | "NONE"
+	Token    string `json:"token"`
+	Nonce    string `json:"nonce"`
+}
+
+// IssueRequest is the body of POST /v1/issue. Mirrors the client's issue request.
+//
+// ConfigID is the routing key — base64url-no-pad of 16 bytes, read by the
+// recipient from the envelope header at import time. Replaces the older
+// SHA-256(envelopeBytes) "configFp" scheme which couldn't survive the
+// redemption flow (each redemption mints a fresh envelope with a
+// different hash; configId is stable by construction). See state.go's
+// ConfigEntry kdoc.
+type IssueRequest struct {
+	V                int             `json:"v"`
+	DevicePk         string          `json:"devicePk"`
+	Attestation      AttestationBlob `json:"attestation"`
+	ConfigID         string          `json:"configId"`
+	RequestNonce     string          `json:"requestNonce"`
+	RequestSignature string          `json:"requestSignature"`
+}
+
+// IssueResponse is the success body of POST /v1/issue.
+//
+// The wire shape collapses to a single ConfigBody
+// payload (base64url-no-pad of its JSON). The session credential is
+// inside that payload at whichever slot the operator's configs.json
+// template put the sentinel — typically v2rayProfile.password or
+// sshConfig.sshPassword. No more sessionCred / serverAddress /
+// vpnProtocol / transportParams on the wire: the ConfigBody carries
+// them as part of the V2rayProfile / SshConfig.
+type IssueResponse struct {
+	// ConfigB64 is base64url-no-pad of a ConfigBody JSON. The recipient
+	// decodes and parses it through the same path V1 envelope bodies use,
+	// so every protocol the V1 path supports automatically works here.
+	ConfigB64 string `json:"configB64"`
+	// ExpiresAt is the RFC3339 UTC timestamp the embedded credential
+	// stops being valid at. The recipient should discard the ConfigBody
+	// and re-issue once this passes.
+	ExpiresAt string `json:"expiresAt"`
+	// ReceiptSig is ECDSA-P256 P1363, base64url-no-pad. Covers
+	// "v1.receipt|" + devicePk + "|" + requestNonce + "|" + expiresAt + "|" + configB64.
+	// The recipient verifies this against the creator pubkey pinned in
+	// the discovery envelope BEFORE consuming ConfigB64.
+	ReceiptSig string `json:"receiptSig"`
+}
+
+// IssueError is the failure body of POST /v1/issue.
+type IssueError struct {
+	Error      string `json:"error"`
+	Detail     string `json:"detail,omitempty"`
+	RetryAfter int    `json:"retryAfter,omitempty"`
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Share-link redemption (POST /v1/redeem)
+//
+// A creator mints a redemption token via the `mint-share-link`
+// subcommand, posts `npvtunnel://join?u=<base64url(/v1/redeem URL)>&t=<token>`
+// publicly. Recipients tap the link; their app POSTs RedeemRequest;
+// the server validates the token, decrements its remaining count,
+// mints a V2 issuer envelope addressed to RecipientPubkey, and
+// returns the raw envelope bytes.
+//
+// The honest UX replacement for the legacy whitebox-AES `.npvt`
+// distribution flow — one tap from a public channel to a fully-
+// installed config, without the whitebox-AES lie about
+// confidentiality.
+// ──────────────────────────────────────────────────────────────────
+
+// RedeemRequest is the JSON body the recipient POSTs to /v1/redeem.
+// No signature: the token is the bearer credential. RecipientPubkey is
+// what the envelope ends up sealed to, so an attacker swapping it
+// can't decrypt the result.
+type RedeemRequest struct {
+	V               int    `json:"v"`
+	Token           string `json:"token"`
+	RecipientPubkey string `json:"recipientPubkey"`
+}
+
+// RedeemError is the failure body of POST /v1/redeem. Same shape as
+// IssueError so client error decoders can reuse most of the
+// machinery. Status code carries the coarse classification.
+type RedeemError struct {
+	// One of:
+	//   token_not_found       — 404
+	//   token_exhausted       — 410 (remainingRedemptions hit 0)
+	//   token_expired         — 410 (past expiresAt)
+	//   bad_pubkey            — 400 (malformed base64 or wrong length)
+	//   bad_request           — 400 (missing field, bad version)
+	//   rate_limited          — 429
+	//   server_error          — 500
+	Error      string `json:"error"`
+	Detail     string `json:"detail,omitempty"`
+	RetryAfter int    `json:"retryAfter,omitempty"`
+}

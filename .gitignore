@@ -1,0 +1,28 @@
+# Compiled binaries (native + cross-compiled for deployment)
+creator-server
+npvtunnel-creator-server
+*.exe
+creator-server.linux-amd64
+creator-server.linux-arm64
+creator-server.darwin-amd64
+creator-server.darwin-arm64
+
+# Local TLS dev certs
+*.pem
+*.key
+
+# Bundled Google AKA root certs are public and load-bearing for the
+# attestation verifier — they MUST be committed even though they're PEM.
+!attestation-roots/*.pem
+
+# goreleaser output
+/dist/
+
+# Local runtime state generated on first run — holds the creator signing
+# key, HMAC key, and audit salt. MUST NOT be committed.
+*.bin
+/state/
+configs.json
+revoked.json
+redemption-tokens.json
+

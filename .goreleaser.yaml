@@ -1,0 +1,63 @@
+# goreleaser v2 config for npvtunnel-creator-server.
+# Builds static, multi-arch Linux binaries, checksums them, and signs the
+# checksum file with cosign (keyless / Sigstore — no key to manage; the
+# signature is tied to the GitHub Actions release identity). The container
+# image is built+pushed+signed separately in .github/workflows/release.yml.
+#
+# Cut a release by pushing a tag:  git tag v0.1.0 && git push origin v0.1.0
+version: 2
+
+project_name: creator-server
+
+builds:
+  - id: creator-server
+    main: .
+    binary: creator-server
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # README/LICENSE are auto-included if present.
+
+checksum:
+  name_template: "checksums.txt"
+
+# Keyless cosign signature over the checksum file. Verifying the checksum
+# file then transitively verifies every artifact listed in it. Requires the
+# release job to have `id-token: write` (configured in the workflow).
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    output: true
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+
+release:
+  github:
+    owner: mukswilly
+    name: npvtunnel-creator-server
+  draft: false
+  prerelease: auto
+
+changelog:
+  use: github
+  sort: asc
