@@ -51,18 +51,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 //
 //  1. Parse + validate request shape; verify ECDSA over the canonical
 //     signing input against req.DevicePk.
-//  2. Revocation check (devicePk in revoked.json → 403).
-//  3. Look up the ConfigEntry by req.ConfigID (404 if unknown).
-//  4. Apply per-(device, config) rate limit.
-//  5. Evaluate attestation policy; reject / shorten TTL as configured.
-//  6. Deep-merge ConfigEntry.Config with the per-recipient variant for
-//     this devicePk.
-//  7. Compute the HMAC-bound credential bytes, encode per
+//  2. Look up the ConfigEntry by req.ConfigID (404 if unknown).
+//  3. Apply per-(device, config) rate limit.
+//  4. Evaluate attestation policy; reject / shorten TTL as configured.
+//  5. Compute the HMAC-bound credential bytes, encode per
 //     ConfigEntry.CredentialEncoding, and substitute every occurrence of
-//     credentialSentinel in the merged ConfigBody with the encoded form.
-//  8. base64url-no-pad the substituted ConfigBody → ConfigB64.
-//  9. Sign the receipt (covers devicePk, requestNonce, expiresAt, ConfigB64).
-//  10. Emit the audit record and return 200 with IssueResponse.
+//     credentialSentinel in the ConfigBody with the encoded form.
+//  6. base64url-no-pad the substituted ConfigBody → ConfigB64.
+//  7. Sign the receipt (covers devicePk, requestNonce, expiresAt, ConfigB64).
+//  8. Emit the audit record and return 200 with IssueResponse.
 func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
 	if err != nil {
@@ -108,29 +105,12 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	// window — a breaking wire change requiring a coordinated client
 	// rollout, deliberately not done here.
 
-	// Revocation check runs AFTER signature verify — we want to know the
-	// claimed devicePk really came from a holder of the matching private
-	// key before we look it up in the blocklist. Otherwise an attacker
-	// could probe revocation status for arbitrary devicePks.
-	if rev := s.state.IsRevoked(req.DevicePk); rev != nil {
-		auditEmit(s.logger, s.state.AuditSalt,
-			"issue.revoked",
-			req.DevicePk,
-			shortBase64(req.ConfigID),
-			"", req.Attestation.Platform, req.Attestation.Token != "", 0,
-			"reason", rev.Reason,
-		)
-		writeIssueError(w, http.StatusForbidden, "device_revoked",
-			"this device is no longer permitted to fetch credentials")
-		return
-	}
-
 	// Look up the registered config. If a config registry is loaded but the
 	// requested fp is not in it, return 404. If no registry is loaded
 	// (configs.json absent / ephemeral mode), fall back to a stub
 	// ConfigBody so the wire-protocol harness keeps working without a
 	// registry.
-	var mergedConfigJson json.RawMessage
+	var configJson json.RawMessage
 	var credentialEncoding string
 	var attestationPolicy *AttestationPolicy
 	if s.state.HasConfigRegistry() {
@@ -178,28 +158,13 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Deep-merge the per-recipient variant onto the base Config
-		// template. Variant absent → base passes through. Failures
-		// here mean configs.json was edited concurrently or somehow
-		// slipped past load-time validation — fail closed so we don't
-		// silently ship a non-watermarked config to a recipient who
-		// was supposed to get one.
-		merged, mergeErr := deepMergeConfigBody(
-			entry.Config,
-			entry.RecipientVariants[req.DevicePk],
-		)
-		if mergeErr != nil {
-			writeIssueError(w, http.StatusInternalServerError, "server_error",
-				"merge recipient variant: "+mergeErr.Error())
-			return
-		}
-		mergedConfigJson = merged
+		configJson = entry.Config
 		credentialEncoding = entry.CredentialEncoding
 	} else {
 		// Stub ConfigBody for ephemeral / no-registry mode. Carries no
 		// credential — the wire-protocol harness checks shape + signing,
 		// not the contents.
-		mergedConfigJson = json.RawMessage(
+		configJson = json.RawMessage(
 			`{"name":"stub","address":"stub.creator-server.example:443","type":"V2RAY","v2rayProfile":{"server":"stub.creator-server.example","serverPort":"443"}}`)
 	}
 
@@ -285,17 +250,17 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 				"encode credential: "+encErr.Error())
 			return
 		}
-		substituted, subErr := injectCredential(mergedConfigJson, encoded)
+		substituted, subErr := injectCredential(configJson, encoded)
 		if subErr != nil {
 			writeIssueError(w, http.StatusInternalServerError, "server_error",
 				"inject credential: "+subErr.Error())
 			return
 		}
-		mergedConfigJson = substituted
+		configJson = substituted
 	}
 
 	resp := IssueResponse{
-		ConfigB64: b64url.EncodeToString(mergedConfigJson),
+		ConfigB64: b64url.EncodeToString(configJson),
 		ExpiresAt: expiresAt,
 	}
 

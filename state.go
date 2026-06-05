@@ -92,34 +92,6 @@ type ConfigEntry struct {
 	// validation rejects entries with no Config.
 	Config json.RawMessage `json:"config"`
 
-	// RecipientVariants lets a creator hand DIFFERENT config templates to
-	// different recipients of the same configId, so a leaked connection
-	// config can be traced back to the recipient who published it. Keys are the
-	// recipient's devicePk (base64url-no-pad, 33 bytes pre-encoding —
-	// same form as IssueRequest.DevicePk). Values are partial ConfigBody
-	// objects: any field present in the variant overrides the
-	// corresponding field in the base Config via deep merge (object-
-	// valued fields recurse; scalar/array values replace).
-	//
-	// Typical use for xray-vless-reality: a creator pre-configures their
-	// VPN server with several acceptable shortIds (one per recipient) and
-	// puts them in the variants here:
-	//
-	//   "recipientVariants": {
-	//     "<bobDevicePk>":   { "v2rayProfile": { "shortId": "7b2c..." } },
-	//     "<carolDevicePk>": { "v2rayProfile": { "shortId": "9d41..." } }
-	//   }
-	//
-	// When a leaked connection config (e.g. its v2rayProfile.shortId)
-	// surfaces publicly, the shortId tells the creator which recipient to revoke.
-	//
-	// Caveats worth knowing:
-	//   - Sophisticated leakers can strip the watermark before publishing
-	//     (randomize shortId, blank path). This is attribution against
-	//     careless leakers — the realistic threat for a typical
-	//     audience — not against motivated adversaries.
-	RecipientVariants map[string]json.RawMessage `json:"recipientVariants,omitempty"`
-
 	// AttestationPolicy controls how /v1/issue treats attestation evidence
 	// from the recipient app. Absent (nil) is equivalent to mode = "off"
 	// and is the back-compat default — existing configs.json without this
@@ -343,12 +315,6 @@ type State struct {
 	// found at startup; /v1/issue falls back to the 3.1a stub response.
 	configs map[string]*ConfigEntry
 
-	// revocations maps devicePk -> RevocationEntry. Empty map when
-	// revoked.json is absent. Lookup is O(1) and runs after request
-	// signature verification, so we know the claimed devicePk is real
-	// before checking it against the list.
-	revocations map[string]*RevocationEntry
-
 	// issuanceLimiter is the per-devicePk sliding-window rate limiter
 	// for /v1/issue. Shared across all configFps so a malicious
 	// device can't sidestep the cap by spreading requests across
@@ -483,11 +449,6 @@ func NewStateWithDir(dir string) (*State, error) {
 		return nil, fmt.Errorf("configs.json: %w", err)
 	}
 
-	revocations, err := loadRevocationsFile(filepath.Join(dir, "revoked.json"))
-	if err != nil {
-		return nil, fmt.Errorf("revoked.json: %w", err)
-	}
-
 	redemptionTokensPath := filepath.Join(dir, "redemption-tokens.json")
 	redemptionTokens, err := loadRedemptionTokensFile(redemptionTokensPath)
 	if err != nil {
@@ -507,7 +468,6 @@ func NewStateWithDir(dir string) (*State, error) {
 		AuditSalt:             auditSalt,
 		stateDir:              dir,
 		configs:               configs,
-		revocations:           revocations,
 		issuanceLimiter:       newRateLimiter(),
 		verifierRegistry:      newVerifierRegistry(),
 		redemptionTokens:      redemptionTokens,
@@ -681,18 +641,6 @@ func loadConfigsFile(path string) (map[string]*ConfigEntry, error) {
 			return nil, fmt.Errorf(
 				"entry %d (configId=%s) credentialEncoding=%q: must be one of \"uuid-v4\", \"base64url-raw\", or empty (defaults to base64url-raw)",
 				i, entry.ConfigID, entry.CredentialEncoding)
-		}
-		// Each variant override must JSON-decode to an object so the
-		// deep-merge in /v1/issue can rely on map shape. Empty objects
-		// are fine (no-op override).
-		for devicePk, variant := range entry.RecipientVariants {
-			var probe map[string]any
-			if err := json.Unmarshal(variant, &probe); err != nil {
-				return nil, fmt.Errorf(
-					"entry %d (configId=%s) recipientVariants[%s]: not a JSON object: %w",
-					i, entry.ConfigID, devicePk, err,
-				)
-			}
 		}
 		// Attestation policy mode must be one of the recognized values.
 		// An operator typo ("strikt"/"soft-fail"/etc.) would otherwise
@@ -870,53 +818,6 @@ func redemptionTokenLess(a, b RedemptionToken) bool {
 	return a.Token < b.Token
 }
 
-// RevocationEntry is one row in state-dir/revoked.json. Devices listed
-// here are refused at /v1/issue with 403 device_revoked.
-//
-// The RevokedAt + Reason fields aren't required for the runtime check
-// (only DevicePk is) but are useful for audit: when a creator looks back
-// at why they kicked someone out six months ago, the reason is right
-// there with the entry.
-type RevocationEntry struct {
-	// DevicePk is the recipient's signing pubkey, base64url-no-pad of
-	// 33 bytes (P-256 SEC 1 compressed). Same form as IssueRequest.DevicePk.
-	DevicePk string `json:"devicePk"`
-	// RevokedAt is an ISO-8601 UTC timestamp. Informational.
-	RevokedAt string `json:"revokedAt,omitempty"`
-	// Reason is a short creator-facing note ("leaked technique 2026-05-27",
-	// "device confirmed compromised", etc.). Informational.
-	Reason string `json:"reason,omitempty"`
-}
-
-// loadRevocationsFile reads revoked.json. Missing file -> empty map (no
-// revocations). The runtime check is by devicePk only; the other fields
-// are kept for audit but unused at request time.
-func loadRevocationsFile(path string) (map[string]*RevocationEntry, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return map[string]*RevocationEntry{}, nil
-		}
-		return nil, err
-	}
-	var list []RevocationEntry
-	if err := json.Unmarshal(data, &list); err != nil {
-		return nil, fmt.Errorf("parse json: %w", err)
-	}
-	out := make(map[string]*RevocationEntry, len(list))
-	for i := range list {
-		entry := &list[i]
-		if entry.DevicePk == "" {
-			return nil, fmt.Errorf("entry %d: missing devicePk", i)
-		}
-		if _, dup := out[entry.DevicePk]; dup {
-			return nil, fmt.Errorf("entry %d: duplicate devicePk %s", i, entry.DevicePk)
-		}
-		out[entry.DevicePk] = entry
-	}
-	return out, nil
-}
-
 // ConfigByID returns the registered ConfigEntry for configId, or nil
 // if no registry is loaded or the configId isn't registered.
 // Goroutine-safe.
@@ -935,18 +836,6 @@ func (s *State) HasConfigRegistry() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.configs != nil
-}
-
-// IsRevoked reports whether the given devicePk has been revoked. Returns
-// the entry so the caller can include the reason in audit logs; nil if
-// the device is not revoked.
-func (s *State) IsRevoked(devicePk string) *RevocationEntry {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.revocations == nil {
-		return nil
-	}
-	return s.revocations[devicePk]
 }
 
 // ReloadRedemptionTokensIfChanged re-reads redemption-tokens.json

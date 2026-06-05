@@ -61,12 +61,13 @@ type Verdict struct {
 	// TrustedRoot=false and the policy layer can refuse it via
 	// AttestationPolicy.RequireTrustedRoot.
 	//
-	// Open caveat: Google publishes a revocation list at
+	// Known limit: Google publishes a revocation list at
 	// https://android.googleapis.com/attestation/status. A cert Google
 	// has marked revoked for known hardware compromise still produces
-	// TrustedRoot=true here. Refreshing the bundled roots requires a
-	// rebuild; revocation needs a separate fetch-and-cache path —
-	// deferred to a follow-up.
+	// TrustedRoot=true here. A fetch-and-cache revocation gate was built
+	// and then removed (fail-open, lagged real compromise, and useless
+	// against the rooted-recipient threat that extracts inside the
+	// credential TTL) — see aka.go's "What it does NOT verify".
 	TrustedRoot bool
 
 	// VerifiedBootState is the bootloader/verified-boot state reported
@@ -135,8 +136,7 @@ func newVerifierRegistry() *verifierRegistry {
 	if err != nil {
 		panic("load embedded Apple App Attest roots: " + err.Error())
 	}
-	akaVerifier := newAndroidKeyAttestationVerifier(akaRoots).
-		withRevocationOracle(newGoogleRevocationOracle())
+	akaVerifier := newAndroidKeyAttestationVerifier(akaRoots)
 	return &verifierRegistry{
 		verifiers: map[string]AttestationVerifier{
 			"android-key-attestation": akaVerifier,

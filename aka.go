@@ -26,15 +26,18 @@ import (
 //   - The extension's ASN.1 structure decodes to expected types.
 //   - attestationSecurityLevel is extracted from the extension.
 //
-// What it does NOT verify (left for follow-up slices):
+// What it does NOT verify:
 //   - Revocation status against Google's attestation status list
 //     (https://android.googleapis.com/attestation/status). A device
-//     whose attestation key has been revoked by Google for known
-//     compromise still passes here.
-//   - Bootloader-locked / verified-boot state from the extension's
-//     RootOfTrust field. The current parser stops at
-//     attestationSecurityLevel because that's the field the policy
-//     gates on; finer-grained gates are future work.
+//     whose attestation key Google has flagged for known compromise
+//     still passes here. A fetch-and-cache revocation gate was built
+//     and then deliberately removed: it was fail-open (skipped whenever
+//     the feed was unreachable — and a censored-region issuer often
+//     can't reach Google at all), it lagged real compromise by weeks,
+//     and it bought nothing against the primary threat (a rooted
+//     recipient extracts the config inside the ~1h credential window,
+//     long before any feed could flag the key). Not worth the standing
+//     network dependency + cache machinery.
 
 // androidKeyAttestationOID is the X.509 extension OID Google reserves
 // for the attestation key-description structure.
@@ -50,38 +53,22 @@ const (
 )
 
 // androidKeyAttestationVerifier is the AKA implementation of
-// AttestationVerifier. The roots pool and revocation oracle are
-// constructor-injected fields (not package globals) so tests can
-// build a verifier anchored at synthetic roots and with controlled
-// revocation state without touching the embedded production roots
-// or Google's live revocation feed.
+// AttestationVerifier. The roots pool is a constructor-injected field
+// (not a package global) so tests can build a verifier anchored at
+// synthetic roots without touching the embedded production roots.
 type androidKeyAttestationVerifier struct {
 	// roots is the pool of trusted root certs. A chain whose final
 	// cert is signed by one of these passes TrustedRoot=true. Nil
 	// roots means "no trust anchor configured"; in that case Verify
 	// rejects every input — fail closed.
 	roots *x509.CertPool
-
-	// revocation reports whether a cert's serial has been flagged
-	// by Google's revocation feed. Nil means "no revocation gate"
-	// — used by older tests that predate the revocation gate.
-	revocation revocationOracle
 }
 
 // newAndroidKeyAttestationVerifier returns an AKA verifier anchored at
-// the given roots pool. Production code path uses loadGoogleAkaRoots()
-// + newGoogleRevocationOracle(); tests inject their own synthetic
-// pool + a noop or static revocation oracle.
+// the given roots pool. Production code path uses loadGoogleAkaRoots();
+// tests inject their own synthetic pool.
 func newAndroidKeyAttestationVerifier(roots *x509.CertPool) *androidKeyAttestationVerifier {
 	return &androidKeyAttestationVerifier{roots: roots}
-}
-
-// withRevocationOracle returns the verifier wired to a specific
-// oracle. Production wiring lives in newVerifierRegistry; tests use
-// this to inject newStaticRevocationOracle.
-func (v *androidKeyAttestationVerifier) withRevocationOracle(o revocationOracle) *androidKeyAttestationVerifier {
-	v.revocation = o
-	return v
 }
 
 func (v *androidKeyAttestationVerifier) Verify(blob AttestationBlob) (Verdict, error) {
@@ -158,23 +145,6 @@ func (v *androidKeyAttestationVerifier) Verify(blob AttestationBlob) (Verdict, e
 	_, verifyErr := leaf.Verify(verifyOpts)
 	trustedRoot := verifyErr == nil
 
-	// Revocation gate. Only meaningful when the
-	// chain anchors — a chain we don't trust can't have its serials
-	// revoked by an authority we don't trust either. We walk every
-	// cert in the chain because Google's revocation list flags
-	// intermediates too (a compromised batch-signing intermediate
-	// invalidates all leaves under it).
-	revokedSerial := ""
-	if trustedRoot && v.revocation != nil {
-		for _, c := range chain {
-			revoked, ok := v.revocation.IsRevoked(c.SerialNumber)
-			if ok && revoked {
-				revokedSerial = c.SerialNumber.Text(16)
-				break
-			}
-		}
-	}
-
 	// Find the attestation extension in the leaf cert.
 	var extBytes []byte
 	for _, ext := range leaf.Extensions {
@@ -209,16 +179,9 @@ func (v *androidKeyAttestationVerifier) Verify(blob AttestationBlob) (Verdict, e
 		verdict.VerifiedBootState = verifiedBootStateString(parsed.verifiedBootState)
 		verdict.DeviceLocked = parsed.deviceLocked
 	}
-	switch {
-	case revokedSerial != "":
-		// Demote Verified + TrustedRoot to false — the chain anchored
-		// at Google but Google has flagged one of its serials.
-		verdict.Verified = false
-		verdict.TrustedRoot = false
-		verdict.Reason = "chain contains a serial flagged on Google's revocation list: " + revokedSerial
-	case trustedRoot:
+	if trustedRoot {
 		verdict.Reason = "chain verified against bundled Google AKA roots"
-	default:
+	} else {
 		verdict.Reason = "chain does not anchor at a known Google AKA root: " + verifyErr.Error()
 	}
 	return verdict, nil

@@ -22,7 +22,7 @@ import (
 // runs this command and posts its URL output. Recipients tap the URL,
 // their app POSTs its pubkey to /v1/redeem, and gets back a fully
 // sealed per-recipient envelope. Same one-tap UX, real cryptographic
-// confidentiality, per-recipient attribution + revocation as a bonus.
+// confidentiality, with device-bound short-TTL credentials underneath.
 //
 // Output format on stdout (one entry per line, machine-parseable):
 //
@@ -181,10 +181,6 @@ func runMintShareLinkSubcommand(args []string) int {
 // envelopes already minted for past redemptions of this token still
 // work — revocation kills the share link, not the per-recipient
 // configs that were already issued through it.
-//
-// To kill per-recipient access too, the operator additionally adds
-// the device's devicePk to revoked.json (different file, different
-// subcommand — out of scope here).
 func runRevokeTokenSubcommand(args []string) int {
 	fs := flag.NewFlagSet("revoke-token", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)

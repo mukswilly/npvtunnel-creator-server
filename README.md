@@ -11,8 +11,8 @@ You run it (on a cheap VPS) only if you want users to get your config by
 **tapping a link** instead of you sending them a config file. When someone taps
 your link, this server gives their app the config — and it builds that config
 **fresh each time the app connects**, so the config never sits inside the file
-or link you posted publicly, and a leaked copy is short-lived and traceable back
-to one person.
+or link you posted publicly, and a leaked credential is short-lived and bound to
+the one device that fetched it.
 
 > **Don't want to run anything?** You don't have to. NpvTunnel also exports
 > configs as plain files — including passphrase-protected ones — with no server
@@ -28,8 +28,9 @@ so anyone can verify exactly what it does.
 ## Who this is for
 
 - **Creators** who want to distribute a config by share link, control who can
-  use it, trace a leak to one person, and cut that person off. **Most of this
-  README is for you.** You need a VPS and a domain, not Go experience.
+  use it (redemption limits + burnable links), and keep a leaked config
+  short-lived. **Most of this README is for you.** You need a VPS and a domain,
+  not Go experience.
 - **Auditors / the curious** — see [Trust & verification](#trust--verification).
 - **Contributors** — see [Build & contribute](#build--contribute).
 
@@ -49,15 +50,15 @@ sits beside them and only handles *distributing the config that points at them*:
    └────────┬─────────┘
             │  each time the user's app connects, it asks this server for the
             └─ config, which is built on the spot: your config + a short-lived
-               credential bound to that one device, watermarked per recipient.
+               credential bound to that one device.
 ```
 
 So:
 
 - **The link/file you post contains no config** — just a pointer to this server.
 - **The real config is fetched per-connection**, valid ~1h, tied to one device.
-  A leaked copy expires fast, identifies who leaked it (the watermark), and you
-  revoke that one device — you don't lose the config to everyone.
+  A leaked copy expires fast and, because the credential is bound to the
+  device that fetched it, can't be replayed from anywhere else.
 
 ---
 
@@ -197,26 +198,18 @@ Repeat `-recipient-pubkey` for several people (or use `-recipient-pubkeys-file`)
 It prints the `configId` and a `configs.json` template; register that entry,
 then send each person the `.npvs` file (any channel — it has no config in it).
 
-### 3. Detect and revoke a leaker
+### 3. Burn a leaked share link
 
-If a watermarked config surfaces publicly, map the differing field (e.g.
-`shortId`) back to the recipient using your own `configs.json`, then refuse them
-future configs by adding their `devicePk` to `<state-dir>/revoked.json` and
-restarting:
-
-```json
-[ { "devicePk": "<base64url>", "revokedAt": "2026-05-27T12:00:00Z", "reason": "leaked config" } ]
-```
-
-That device then gets `403`. Rotate the technique on your VPN server; everyone
-else keeps working. To also kill a *share link* so no new people can redeem it:
+If a `npvtunnel://join` link you posted is being passed around more widely than
+you intended, kill it so no new people can redeem it:
 
 ```sh
 creator-server revoke-token -state-dir /var/lib/creator-server -token <token>
 ```
 
-> Revocation stops *future* handouts. A config already fetched works until it
-> expires — so keep TTLs short.
+Further redemption attempts get `404`. Configs already fetched through past
+redemptions keep working until they expire — so keep TTLs short. To rotate the
+underlying technique, change your VPN server + `configs.json` and re-issue.
 
 ---
 
@@ -224,22 +217,6 @@ creator-server revoke-token -state-dir /var/lib/creator-server -token <token>
 
 Defaults work out of the box. Skip this unless you're managing a closed
 audience.
-
-### Per-recipient watermarking
-
-Hand a slightly different config to each recipient so a leak is traceable. Add
-`recipientVariants` to a `configs.json` entry, keyed by `devicePk`:
-
-```json
-"recipientVariants": {
-  "<devicePk-A>": { "v2rayProfile": { "shortId": "deadbeef" } },
-  "<devicePk-B>": { "v2rayProfile": { "shortId": "cafebabe" } }
-}
-```
-
-Values are partial configs, deep-merged over the base `config`. **Limit:** a
-sophisticated leaker can strip the watermark — this catches careless leaks,
-which is the realistic case.
 
 ### Attestation tiers
 
@@ -274,7 +251,7 @@ is the iOS equivalent (set `appId` to `TEAMID.bundle.id`; don't set
 > for sideload-heavy audiences. Many users in censored regions run rooted phones
 > *by necessity*, and these gates lock them out. They're for managed audiences
 > where everyone is on stock firmware. Open audiences should leave attestation
-> `off` and rely on watermarking + revocation.
+> `off` and rely on short credential TTLs + device-bound credentials.
 
 ### Rate limit
 
@@ -297,12 +274,11 @@ With `-state-dir` set, the server keeps these files (`0600`, owner `creator`):
 | `audit-salt.bin` | Salt that hashes device IDs in the audit log | log correlation resets (nothing cryptographic). |
 | `configs.json` | The configs you hand out — **you write this** | nothing to hand out. |
 | `redemption-tokens.json` | Live share-link tokens — **managed by the subcommands** | outstanding links stop working. |
-| `revoked.json` | Devices you've cut off — **you write this** | revocations lifted. |
 
 Without `-state-dir` the server runs with ephemeral keys and serves a stub
 config — **dev/test only**, since every restart breaks recipients.
 
-`configs.json` and `revoked.json` are read at startup (restart after editing).
+`configs.json` is read at startup (restart after editing).
 `redemption-tokens.json` is re-read on each redemption, so `mint-share-link`
 takes effect without a restart.
 
@@ -352,8 +328,7 @@ are in-memory and per-process.
 ## Trust & verification
 
 - **No central infrastructure.** It talks only to your own VPN server and the
-  clients that connect — no phone-home. The one optional outbound call is the
-  Android attestation revocation feed, which fails open.
+  clients that connect — no phone-home, no outbound calls.
 - **No per-creator cloud accounts.** Google's and Apple's attestation roots are
   bundled into the binary (`attestation-roots/`).
 - **Reproducible, signed releases.** Release binaries and the container image
@@ -399,18 +374,6 @@ Run any with `-h` for full flags.
 | `POST /v1/redeem` | Turn a share-link token into a per-recipient discovery pointer (not the config). |
 | `GET /v1/creator-pubkey` | The creator's public signing key (dev/test; recipients pin it from the pointer). |
 | `GET /healthz` | Liveness probe (`ok`). |
-
-### `revoked.json`
-
-```json
-[
-  { "devicePk": "<base64url>", "revokedAt": "2026-05-27T12:00:00Z", "reason": "leaked config" },
-  { "devicePk": "<base64url>" }
-]
-```
-
-`revokedAt` / `reason` are notes for your own records; only `devicePk` is used
-at request time.
 
 ---
 

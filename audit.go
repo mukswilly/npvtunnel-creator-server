@@ -36,7 +36,7 @@ func hashDevicePk(salt []byte, devicePkB64 string) string {
 // the devicePk hashing happens once, in one place.
 //
 // Fields:
-//   event           — "issue.granted", "issue.revoked",
+//   event           — "issue.granted", "issue.rate_limited",
 //                     "issue.attestation_rejected", "issue.attestation_observed".
 //   devicePkB64     — raw IssueRequest.DevicePk; will be hashed before log.
 //   configID        — IssueRequest.ConfigID; the routing key, shortened
