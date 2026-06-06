@@ -221,7 +221,6 @@ func TestConfigsFileRejectsAppAttestWithoutAppID(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",
@@ -242,7 +241,6 @@ func TestConfigsFileAcceptsAppAttestWithAppID(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",
@@ -265,7 +263,6 @@ func TestIssueAppAttestStrictRejectsWrongAppID(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",
@@ -305,7 +302,6 @@ func TestIssueAppAttestStrictAcceptsMatchingAppID(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",

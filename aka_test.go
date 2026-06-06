@@ -269,7 +269,6 @@ func TestIssueRequireVerifiedBootAcceptsVerifiedDevice(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",
@@ -310,7 +309,6 @@ func TestIssueRequireVerifiedBootRejectsUnverifiedDevice(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",
@@ -352,7 +350,6 @@ func TestIssueRequireVerifiedBootRejectsAttestationWithoutRootOfTrust(t *testing
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",
@@ -451,7 +448,6 @@ func TestConfigsFileRejectsUnknownVerifier(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {"mode": "soft", "verifier": "android-key-attest"}
 	}]`
@@ -477,7 +473,6 @@ func TestIssueStrictWithVerifierRejectsSoftwareKey(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",
@@ -513,7 +508,6 @@ func TestIssueStrictWithVerifierAcceptsStrongBox(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",
@@ -553,7 +547,6 @@ func TestIssueRequireTrustedRootRejectsUntrustedRoot(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",
@@ -595,7 +588,6 @@ func TestIssueRequireTrustedRootAcceptsTrustedRoot(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {
 			"mode": "strict",

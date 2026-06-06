@@ -40,7 +40,6 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 	// Both use the same testCID (the routing key).
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:           testCID,
-		VpnProtocol:        "xray-vless-reality",
 		CredentialEncoding: credEncodingUuidV4,
 		Config: json.RawMessage(`{
 			"name": "alpha",

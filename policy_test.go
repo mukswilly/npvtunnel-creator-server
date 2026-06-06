@@ -127,7 +127,6 @@ func TestConfigsFileRejectsInvalidAttestationMode(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "x",
 		"config": {"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {"mode": "strikt"}
 	}]`
@@ -145,7 +144,6 @@ func TestConfigsFileRejectsNegativeSoftFailureTtl(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "x",
 		"config": {"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {"mode": "soft", "softFailureTtlSec": -5}
 	}]`
@@ -167,7 +165,6 @@ func TestConfigsFileAcceptsAllValidModes(t *testing.T) {
 			// configId across modes doesn't collide at load time.
 			raw := `[{
 				"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-				"vpnProtocol": "x",
 				"config": {"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}},
 				"attestationPolicy": {"mode": "` + mode + `"}
 			}]`
@@ -188,7 +185,6 @@ func TestIssueStrictModeRejectsRequestWithoutAttestation(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {"mode": "strict"}
 	}]`
@@ -216,7 +212,6 @@ func TestIssueStrictModeAllowsRequestWithAttestation(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {"mode": "strict"}
 	}]`
@@ -247,7 +242,6 @@ func TestIssueSoftModeShortensTtlForUnattestedRequest(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {"mode": "soft", "softFailureTtlSec": 60}
 	}]`
@@ -286,7 +280,6 @@ func TestIssueOffModeUsesFullTtlRegardlessOfAttestation(t *testing.T) {
 	// No attestationPolicy field = "off" by default.
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)

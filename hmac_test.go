@@ -192,7 +192,6 @@ func TestIssueRoundTripCredIsHmacDerived(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"credentialEncoding": "uuid-v4",
 		"config": {
 			"name": "alpha",

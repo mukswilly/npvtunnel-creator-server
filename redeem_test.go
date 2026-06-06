@@ -33,7 +33,6 @@ func TestRedeemRoundTrip(t *testing.T) {
 	writeConfigs(t, dir, []ConfigEntry{
 		{
 			ConfigID:           testCID,
-			VpnProtocol:        "xray-vless-reality",
 			CredentialEncoding: credEncodingUuidV4,
 			Config: json.RawMessage(`{
 				"name": "alpha",
@@ -129,7 +128,6 @@ func TestRedeemReusesConfigIDAcrossRedemptions(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:           testCID,
-		VpnProtocol:        "xray-vless-reality",
 		CredentialEncoding: credEncodingUuidV4,
 		Config:             json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
@@ -166,7 +164,6 @@ func TestRedeemUnknownTokenReturns404(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
@@ -195,7 +192,6 @@ func TestRedeemExhaustedReturns410(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
@@ -229,7 +225,6 @@ func TestRedeemExpiredReturns410(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
@@ -265,7 +260,6 @@ func TestRedeemMalformedPubkeyReturns400(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
@@ -302,7 +296,6 @@ func TestRedeemMissingPublicIssuerURL(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
@@ -337,7 +330,6 @@ func TestRedeemPersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
@@ -388,7 +380,6 @@ func TestRedeemConcurrentRedemptionsCannotOverdraw(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
@@ -447,7 +438,6 @@ func TestRedeemHotReloadsTokensWhenFileChanges(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:           testCID,
-		VpnProtocol:        "xray-vless-reality",
 		CredentialEncoding: credEncodingUuidV4,
 		Config:             json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
@@ -506,7 +496,6 @@ func TestRedeemHotReloadRespectsRemovedFile(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:           testCID,
-		VpnProtocol:        "xray-vless-reality",
 		CredentialEncoding: credEncodingUuidV4,
 		Config:             json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
@@ -552,7 +541,6 @@ func TestRedeemRateLimitedByIP(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
@@ -611,7 +599,6 @@ func TestRedeemExhaustedSkipsMint(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
@@ -647,7 +634,6 @@ func TestRedeemExpiredSkipsMint(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)

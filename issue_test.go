@@ -37,7 +37,7 @@ func TestIssueRoundTrip(t *testing.T) {
 	}
 	devPkB64 := compressP256ToB64(t, &devPriv.PublicKey)
 
-	configFp := b64url.EncodeToString(randomBytes(t, 32))
+	configID := b64url.EncodeToString(randomBytes(t, 32))
 	requestNonce := b64url.EncodeToString(randomBytes(t, 16))
 
 	req := IssueRequest{
@@ -48,7 +48,7 @@ func TestIssueRoundTrip(t *testing.T) {
 			Token:    "",
 			Nonce:    b64url.EncodeToString(randomBytes(t, 16)),
 		},
-		ConfigID:     configFp,
+		ConfigID:     configID,
 		RequestNonce: requestNonce,
 	}
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))

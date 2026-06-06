@@ -12,7 +12,7 @@ import (
 // runMintShareLinkSubcommand handles `creator-server mint-share-link ...`.
 //
 // Generates a random redemption token, validates that the named
-// configFp is already registered in configs.json, and appends a new
+// configId is already registered in configs.json, and appends a new
 // entry to redemption-tokens.json. Outputs the
 // `npvtunnel://join?u=<...>&t=<token>` deep link on stdout for the
 // operator to paste into their channel.
@@ -163,12 +163,11 @@ func runMintShareLinkSubcommand(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr,
 		"\n--- mint-share-link summary ---\n"+
-			"vpnProtocol: %s\n"+
 			"redemptions: %d\n"+
 			"expires:     %s\n"+
 			"label:       %q\n"+
 			"\nPost this URL in your share channel:\n  %s\n",
-		entry.VpnProtocol, *redemptions, expiryStr, *label, joinLink,
+		*redemptions, expiryStr, *label, joinLink,
 	)
 
 	return 0

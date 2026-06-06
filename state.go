@@ -45,9 +45,9 @@ import (
 // Config carries a full ConfigBody template — same JSON shape the V1
 // envelope body uses (see the client). Wherever the operator
 // wants the per-session credential to land, they place the literal string
-// [credentialSentinel] ("$NPVT_CREDENTIAL$"). At /v1/issue time, after
-// merging in any recipient variant, the server replaces every occurrence
-// of that sentinel with the HMAC-derived credential, encoded per
+// [credentialSentinel] ("$NPVT_CREDENTIAL$"). At /v1/issue time the server
+// replaces every occurrence of that sentinel with the HMAC-derived
+// credential, encoded per
 // CredentialEncoding. The substituted ConfigBody is base64url-no-pad
 // encoded into IssueResponse.ConfigB64 — the recipient parses it as a
 // ConfigBody and uses it directly through the normal connect path.
@@ -62,12 +62,6 @@ type ConfigEntry struct {
 	// base64url-no-pad of 16 raw bytes.
 	ConfigID string `json:"configId"`
 
-	// VpnProtocol is informational only — surfaces in audit logs and is
-	// echoed into the discovery envelope's vpnProtocolHint when an
-	// operator runs `creator-server mint`. NOT load-bearing for the
-	// issuance pipeline (Config carries everything the recipient needs).
-	VpnProtocol string `json:"vpnProtocol,omitempty"`
-
 	// CredentialEncoding names how the HMAC-bound credential bytes get
 	// rendered when substituted into Config's sentinel slot. See
 	// inject.go for the recognized values. Empty defaults to
@@ -76,7 +70,7 @@ type ConfigEntry struct {
 	CredentialEncoding string `json:"credentialEncoding,omitempty"`
 
 	// Config is the full ConfigBody JSON the issuer ships to recipients
-	// (after per-recipient variant merge + credential substitution).
+	// (after credential substitution at issue time).
 	// Shape mirrors the ConfigBody JSON the client expects:
 	//
 	//   { "name": "...", "address": "host:port",
@@ -311,12 +305,12 @@ type State struct {
 	// Empty in tests that don't need persistence.
 	stateDir string
 
-	// configs maps ConfigFp -> ConfigEntry. nil when no configs.json was
-	// found at startup; /v1/issue falls back to the 3.1a stub response.
+	// configs maps configId -> ConfigEntry. nil when no configs.json was
+	// found at startup; /v1/issue falls back to the stub response.
 	configs map[string]*ConfigEntry
 
-	// issuanceLimiter is the per-devicePk sliding-window rate limiter
-	// for /v1/issue. Shared across all configFps so a malicious
+	// issuanceLimiter is the per-(devicePk, configId) sliding-window
+	// rate limiter for /v1/issue. Keyed on configId so a malicious
 	// device can't sidestep the cap by spreading requests across
 	// multiple configs from the same creator.
 	issuanceLimiter *rateLimiter
@@ -579,7 +573,7 @@ func loadOrCreateCreatorKey(path string) (*ecdsa.PrivateKey, error) {
 //
 // Validates that each entry has a unique configId (must be base64url-no-pad
 // of exactly 16 raw bytes, matching what the envelope minter embeds in
-// the header) and that any recipient-variant override is a JSON object.
+// the header) and that its config is a JSON object.
 // Operator typos surface here, not at the first recipient connect.
 func loadConfigsFile(path string) (map[string]*ConfigEntry, error) {
 	data, err := os.ReadFile(path)
@@ -626,8 +620,7 @@ func loadConfigsFile(path string) (map[string]*ConfigEntry, error) {
 				"entry %d (configId=%s): missing required field config", i, entry.ConfigID)
 		}
 		// Config must JSON-decode to an object (the ConfigBody shape).
-		// A scalar or array here would break the deep-merge and the
-		// sentinel substitution.
+		// A scalar or array here would break the sentinel substitution.
 		var configProbe map[string]any
 		if err := json.Unmarshal(entry.Config, &configProbe); err != nil {
 			return nil, fmt.Errorf(

@@ -84,9 +84,8 @@ type crossLangFixture struct {
 }
 
 type crossLangExpected struct {
-	Kind            string `json:"kind"`
-	IssuerURL       string `json:"issuerUrl"`
-	VpnProtocolHint string `json:"vpnProtocolHint"`
+	Kind      string `json:"kind"`
+	IssuerURL string `json:"issuerUrl"`
 	// CreatorPubkeyB64 inside the body must equal the header's
 	// creator.pk field (the V2 body redundantly carries this so the
 	// recipient can verify receipts later without keeping the
@@ -147,9 +146,6 @@ func TestCrossLanguageFixtureValid(t *testing.T) {
 	}
 	if b.IssuerURL != fx.Expected.IssuerURL {
 		t.Errorf("body.issuerUrl = %q, want %q", b.IssuerURL, fx.Expected.IssuerURL)
-	}
-	if b.VpnProtocolHint == nil || *b.VpnProtocolHint != fx.Expected.VpnProtocolHint {
-		t.Errorf("body.vpnProtocolHint = %v, want %q", b.VpnProtocolHint, fx.Expected.VpnProtocolHint)
 	}
 	if b.CreatorPubkey != fx.Expected.CreatorPubkeyB64 {
 		t.Errorf("body.creatorPubkey = %q, want %q", b.CreatorPubkey, fx.Expected.CreatorPubkeyB64)
@@ -231,15 +227,11 @@ func generateCrossLangFixture() (*crossLangFixture, error) {
 	}
 
 	// Mint an envelope addressed to the recipient.
-	const (
-		issuerURL       = "https://issuer.test/v1/issue"
-		vpnProtocolHint = "xray-vless-reality"
-	)
+	const issuerURL = "https://issuer.test/v1/issue"
 	out, err := mintIssuerEnvelope(mintInput{
 		CreatorKey:       creatorPriv,
 		RecipientPubKeys: [][]byte{recipientPubCompressed},
 		IssuerURL:        issuerURL,
-		VpnProtocolHint:  vpnProtocolHint,
 		// Frozen timestamp so the fixture's issuedAt is human-
 		// readable. Doesn't affect cryptographic correctness.
 		IssuedAt: time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC),
@@ -263,7 +255,6 @@ func generateCrossLangFixture() (*crossLangFixture, error) {
 		Expected: crossLangExpected{
 			Kind:             "v2-issuer",
 			IssuerURL:        issuerURL,
-			VpnProtocolHint:  vpnProtocolHint,
 			CreatorPubkeyB64: b64url.EncodeToString(creatorPubCompressed),
 		},
 	}, nil

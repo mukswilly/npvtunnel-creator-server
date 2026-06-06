@@ -24,7 +24,6 @@ func TestMintShareLinkHappyPath(t *testing.T) {
 	}
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "xray-vless-reality",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 
@@ -68,7 +67,6 @@ func TestMintShareLinkRejectsUnknownConfigID(t *testing.T) {
 	}
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 
@@ -96,7 +94,6 @@ func TestMintShareLinkRequiresHttps(t *testing.T) {
 	NewStateWithDir(dir)
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 
@@ -117,7 +114,6 @@ func TestMintShareLinkExpiresInIsApplied(t *testing.T) {
 	NewStateWithDir(dir)
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID:    testCID,
-		VpnProtocol: "x",
 		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 	}})
 

@@ -150,13 +150,12 @@ func TestAuditEmitNeverLogsRawDevicePk(t *testing.T) {
 
 // TestAuditEmitContainsExpectedFields — the structured record has the
 // fields a creator needs to detect anomalies (event, hashed device,
-// configFp, policy mode, claimed attestation, ttl).
+// configId, policy mode, claimed attestation, ttl).
 func TestAuditEmitContainsExpectedFields(t *testing.T) {
 	dir := t.TempDir()
 	// Configure a strict policy so the rejected branch fires too.
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {"mode": "strict"}
 	}]`
@@ -200,7 +199,6 @@ func TestAuditEmitNeverLogsAttestationToken(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "xray-vless-reality",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
 		"attestationPolicy": {"mode": "observe"}
 	}]`

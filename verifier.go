@@ -112,10 +112,11 @@ type Verdict struct {
 }
 
 // verifierRegistry maps the AttestationPolicy.Verifier name to a
-// verifier instance. Empty registry / unknown name yields the noop
-// verifier — fail open in the framework, never silently fail closed.
-// The policy layer is what fails closed; the verifier just produces
-// the verdict.
+// verifier instance. An empty name resolves to no verifier (Lookup
+// returns nil, nil) and the policy layer falls back to the claimed-
+// attestation check; an unknown name is a load-time error, surfaced
+// when configs.json is validated. The registry never decides accept/
+// reject — it only produces the verdict the policy layer acts on.
 type verifierRegistry struct {
 	verifiers map[string]AttestationVerifier
 }
@@ -189,16 +190,4 @@ func (r *verifierRegistry) knownNames() []string {
 		out = append(out, k)
 	}
 	return out
-}
-
-// noopVerifier accepts any non-empty token. Lives here as a documented
-// option for tests + as the implicit default when AttestationPolicy.Verifier
-// is empty.
-type noopVerifier struct{}
-
-func (noopVerifier) Verify(blob AttestationBlob) (Verdict, error) {
-	if blob.Token == "" {
-		return Verdict{Verified: false, Reason: "empty token"}, nil
-	}
-	return Verdict{Verified: true, Reason: "noop verifier — token not actually checked"}, nil
 }

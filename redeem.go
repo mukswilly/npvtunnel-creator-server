@@ -163,7 +163,7 @@ func (s *Server) handleRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up the named configFp in configs.json. We could let the
+	// Look up the named configId in configs.json. We could let the
 	// minter succeed and the recipient discover this on first
 	// /v1/issue, but doing the check here gives the operator a clean
 	// error path: if they accidentally revoked a config that still
@@ -177,7 +177,7 @@ func (s *Server) handleRedeem(w http.ResponseWriter, r *http.Request) {
 	cfgEntry := s.state.ConfigByID(token.ConfigID)
 	if cfgEntry == nil {
 		writeRedeemError(w, http.StatusInternalServerError, "server_error",
-			"token references a configFp that's no longer registered")
+			"token references a configId that's no longer registered")
 		return
 	}
 
@@ -200,10 +200,9 @@ func (s *Server) handleRedeem(w http.ResponseWriter, r *http.Request) {
 		CreatorKey:       s.state.CreatorSigningKey,
 		RecipientPubKeys: [][]byte{recipientPub},
 		IssuerURL:        s.state.PublicIssuerURL,
-		VpnProtocolHint:  cfgEntry.VpnProtocol,
 		ConfigID:         configID,
 		// Policy is intentionally nil → mint with defaults. A token
-		// pre-records the configFp; the runtime AttestationPolicy on
+		// pre-records the configId; the runtime AttestationPolicy on
 		// the configs.json entry is what gates issuance, not the
 		// envelope's signed policy field.
 	})

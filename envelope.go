@@ -93,14 +93,13 @@ type envelopeRecipient struct {
 // issuerBody mirrors IssuerBody in the client. Field
 // names + Json config (encodeDefaults=false except `kind`) are
 // preserved so the body bytes match what the client sealer would
-// produce — important for the canonical configFp the issuer's
-// configs.json keys on.
+// produce — required for the envelope signature to verify on the
+// recipient side (the recipient re-canonicalizes and checks the sig).
 type issuerBody struct {
-	Kind            string  `json:"kind"`
-	CreatorPubkey   string  `json:"creatorPubkey"`
-	IssuerURL       string  `json:"issuerUrl"`
-	VpnProtocolHint *string `json:"vpnProtocolHint,omitempty"`
-	MinAppVersion   *string `json:"minAppVersion,omitempty"`
+	Kind          string  `json:"kind"`
+	CreatorPubkey string  `json:"creatorPubkey"`
+	IssuerURL     string  `json:"issuerUrl"`
+	MinAppVersion *string `json:"minAppVersion,omitempty"`
 }
 
 const issuerBodyKindV2 = "v2-issuer"
@@ -132,8 +131,6 @@ type mintInput struct {
 	RecipientPubKeys [][]byte
 	// IssuerURL is the creator-server's public /v1/issue endpoint.
 	IssuerURL string
-	// VpnProtocolHint is informational ("xray-vless-reality" etc.).
-	VpnProtocolHint string
 	// MinAppVersion is informational; recipients can warn if their
 	// app is older.
 	MinAppVersion string
@@ -152,14 +149,17 @@ type mintResult struct {
 	// EnvelopeBytes is the raw .npvs bytes — pass to recipient as
 	// base64 over text channels, or as the file directly.
 	EnvelopeBytes []byte
-	// ConfigFp is base64url-no-pad of SHA-256(envelopeBytes). This
-	// is the value the operator pastes into configs.json so the
-	// issuer can route /v1/issue requests for this envelope to the
-	// right registry entry.
+	// ConfigFp is base64url-no-pad of SHA-256(envelopeBytes) — an
+	// integrity hash of the envelope file, informational only. Not a
+	// routing key (see ConfigID) and not sent by the recipient; useful
+	// for verifying an envelope file hasn't been corrupted in transit.
 	ConfigFp string
 	// ConfigID is the 16-byte stable identifier embedded in the
-	// envelope header. Useful for the operator if they want to
-	// update this envelope later (re-mint with the same ConfigID).
+	// envelope header. This is the routing key: the operator pastes its
+	// base64url form into configs.json, and the recipient echoes it back
+	// in every /v1/issue request so the issuer can find the registry
+	// entry. Stable across re-mints — re-mint with the same ConfigID to
+	// update an envelope without breaking existing recipients.
 	ConfigID []byte
 }
 
@@ -167,7 +167,7 @@ type mintResult struct {
 
 // mintIssuerEnvelope produces a fully-sealed V2 issuer envelope per
 // the mintInput. Caller is responsible for distributing the result
-// to the recipient + adding the configFp to configs.json.
+// to the recipient + registering the configId in configs.json.
 func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 	if in.CreatorKey == nil {
 		return nil, fmt.Errorf("CreatorKey is required")
@@ -279,8 +279,7 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		Kind:          issuerBodyKindV2,
 		CreatorPubkey: b64url.EncodeToString(creatorPub),
 		IssuerURL:     in.IssuerURL,
-		VpnProtocolHint: ptrOrNil(in.VpnProtocolHint),
-		MinAppVersion:   ptrOrNil(in.MinAppVersion),
+		MinAppVersion: ptrOrNil(in.MinAppVersion),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode issuer body: %w", err)

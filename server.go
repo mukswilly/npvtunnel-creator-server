@@ -117,7 +117,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		entry := s.state.ConfigByID(req.ConfigID)
 		if entry == nil {
 			writeIssueError(w, http.StatusNotFound, "config_not_found",
-				"this issuer does not know about that configFp")
+				"this issuer does not know about that configId")
 			return
 		}
 		attestationPolicy = entry.AttestationPolicy
@@ -125,7 +125,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		// Per-(device, config) rate limit. Different configs have
 		// independent quotas; a malicious device can't dodge the limit
 		// by spreading requests across configs of the same creator
-		// because the key includes configFp. Limit value comes from
+		// because the key includes configId. Limit value comes from
 		// the policy (or its default).
 		limit := resolveIssuanceLimit(attestationPolicy)
 		if limit > 0 {

@@ -13,8 +13,8 @@ import (
 // runMintSubcommand handles `creator-server mint ...`. Loads the
 // persisted creator key from the state dir, mints a V2 issuer
 // envelope addressed to the supplied recipient, and prints the
-// configFp + envelope bytes (as base64url-no-pad) on stdout in a
-// machine-parseable format.
+// configId (routing key), configFp (integrity hash), and envelope
+// bytes (all base64url-no-pad) on stdout in a machine-parseable format.
 //
 // Wire-compatible with the NpvTunnel client's envelope parser.
 // Cross-language compat is asserted by the Go-side envelope_test.go
@@ -42,8 +42,6 @@ func runMintSubcommand(args []string) int {
 			"Combined with -recipient-pubkey flags if both supplied.")
 	issuerURL := fs.String("issuer-url", "",
 		"HTTPS URL of this server's /v1/issue endpoint (required)")
-	vpnProtocolHint := fs.String("vpn-protocol-hint", "",
-		"informational hint about the underlying VPN protocol (e.g. xray-vless-reality)")
 	minAppVersion := fs.String("min-app-version", "",
 		"informational minimum app version that understands this body shape")
 	expiresAtStr := fs.String("expires-at", "",
@@ -178,7 +176,6 @@ func runMintSubcommand(args []string) int {
 		CreatorKey:       creatorKey,
 		RecipientPubKeys: pubkeys,
 		IssuerURL:        *issuerURL,
-		VpnProtocolHint:  *vpnProtocolHint,
 		MinAppVersion:    *minAppVersion,
 		Policy:           &pol,
 	})
@@ -216,7 +213,6 @@ func runMintSubcommand(args []string) int {
 			"\nAdd this entry to configs.json:\n"+
 			`{
   "configId":           "%s",
-  "vpnProtocol":        %q,
   "credentialEncoding": "uuid-v4",
   "config": {
     "name":    "<display name>",
@@ -233,7 +229,7 @@ func runMintSubcommand(args []string) int {
 }
 `+"\n",
 		len(pubkeys), *issuerURL, configIDB64, len(res.EnvelopeBytes),
-		configIDB64, *vpnProtocolHint,
+		configIDB64,
 	)
 
 	return 0

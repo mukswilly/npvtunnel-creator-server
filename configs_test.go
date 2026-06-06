@@ -17,8 +17,7 @@ import (
 func TestConfigsFileLoadRejectsMissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
-		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "x"
+		"configId": "AAAAAAAAAAAAAAAAAAAAAA"
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(raw), 0o600)
 	_, err := NewStateWithDir(dir)
@@ -36,7 +35,6 @@ func TestConfigsFileLoadRejectsUnknownCredentialEncoding(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"vpnProtocol": "x",
 		"credentialEncoding": "uuid-v3",
 		"config": {"type":"V2RAY"}
 	}]`

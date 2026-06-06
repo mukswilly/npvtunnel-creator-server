@@ -181,7 +181,6 @@ func TestMintEnvelopeRoundTrip(t *testing.T) {
 		CreatorKey:       creatorPriv,
 		RecipientPubKeys: [][]byte{recipientPubCompressed},
 		IssuerURL:        "https://issuer.test/v1/issue",
-		VpnProtocolHint:  "xray-vless-reality",
 		IssuedAt:         time.Date(2026, 5, 27, 18, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
@@ -257,9 +256,6 @@ func TestMintEnvelopeRoundTrip(t *testing.T) {
 	}
 	if b.IssuerURL != "https://issuer.test/v1/issue" {
 		t.Errorf("body.issuerUrl = %q", b.IssuerURL)
-	}
-	if b.VpnProtocolHint == nil || *b.VpnProtocolHint != "xray-vless-reality" {
-		t.Errorf("body.vpnProtocolHint = %v", b.VpnProtocolHint)
 	}
 	// creatorPubkey in the body matches header.creator.pk.
 	if b.CreatorPubkey != dec.Header.Creator.Pk {

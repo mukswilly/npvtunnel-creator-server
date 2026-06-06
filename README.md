@@ -137,7 +137,6 @@ device-bound credential each time an app connects.
 [
   {
     "configId": "base64url-no-pad of 16 random bytes",
-    "vpnProtocol": "xray-vless-reality",
     "credentialEncoding": "uuid-v4",
     "config": {
       "name": "My config",
@@ -153,8 +152,11 @@ device-bound credential each time an app connects.
 ]
 ```
 
-- **`config`** is the complete v2ray or SSH config (server address and transport
-  settings are just its fields).
+- **`config`** is a complete **v2ray** or **SSH** config — the only two protocols
+  NpvTunnel supports. `config.type` (`V2RAY` or `SSH`) picks which; everything
+  else (server address, port, transport settings) is just that protocol's normal
+  fields. Mark the credential slot with `$NPVT_CREDENTIAL$` — `v2rayProfile.password`
+  above, or `sshConfig.sshPassword` for an SSH config.
 - **`credentialEncoding`**: `uuid-v4` for VLESS/VMess id fields, or
   `base64url-raw` (the default) for SSH passwords / opaque secrets.
 - Restart the server after editing `configs.json` (no hot-reload).
@@ -190,7 +192,6 @@ creator-server mint \
   -state-dir /var/lib/creator-server \
   -recipient-pubkey <theirDevicePubkey-base64url> \
   -issuer-url https://issuer.yourdomain.example/v1/issue \
-  -vpn-protocol-hint xray-vless-reality \
   -out recipient.npvs
 ```
 
@@ -361,7 +362,7 @@ Run any with `-h` for full flags.
 | Command | Purpose | Key flags |
 |---|---|---|
 | (none) | Run the server. | the table above |
-| `mint` | Make a discovery pointer (`.npvs`) for known recipient pubkey(s). | `-state-dir`, `-recipient-pubkey` (repeatable) / `-recipient-pubkeys-file`, `-issuer-url`, `-vpn-protocol-hint`, `-out` |
+| `mint` | Make a discovery pointer (`.npvs`) for known recipient pubkey(s). | `-state-dir`, `-recipient-pubkey` (repeatable) / `-recipient-pubkeys-file`, `-issuer-url`, `-out` |
 | `mint-share-link` | Make a `npvtunnel://join` link + redemption token. | `-state-dir`, `-config-id`, `-redemption-url`, `-redemptions`, `-expires-in`, `-label` |
 | `revoke-token` | Burn a leaked share-link token. | `-state-dir`, `-token` |
 | `version` | Print build version. | — |

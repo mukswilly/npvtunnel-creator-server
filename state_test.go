@@ -102,16 +102,15 @@ func TestConfigsFileMissingFallsBackToStub(t *testing.T) {
 	}
 }
 
-// TestConfigsFileRoutesByConfigFp confirms that when a config registry is
+// TestConfigsFileRoutesByConfigID confirms that when a config registry is
 // loaded, /v1/issue returns the registered entry's Config — and that two
 // entries route to two different configs.
-func TestConfigsFileRoutesByConfigFp(t *testing.T) {
+func TestConfigsFileRoutesByConfigID(t *testing.T) {
 	dir := t.TempDir()
 
 	configs := []ConfigEntry{
 		{
 			ConfigID:           "AAAAAAAAAAAAAAAAAAAAAA",
-			VpnProtocol:        "xray-vless-reality",
 			CredentialEncoding: credEncodingUuidV4,
 			Config: json.RawMessage(`{
 				"name": "alpha",
@@ -128,7 +127,6 @@ func TestConfigsFileRoutesByConfigFp(t *testing.T) {
 		},
 		{
 			ConfigID:           "EBAQEBAQEBAQEBAQEBAQEA",
-			VpnProtocol:        "ssh-tls-payload",
 			CredentialEncoding: credEncodingBase64UrlRaw,
 			Config: json.RawMessage(`{
 				"name": "bravo",
@@ -195,9 +193,8 @@ func TestConfigsFileUnknownFpReturns404(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{
 		{
-			ConfigID:    "AAAAAAAAAAAAAAAAAAAAAA",
-			VpnProtocol: "x",
-			Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+			ConfigID: "AAAAAAAAAAAAAAAAAAAAAA",
+			Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
 		},
 	})
 	state, err := NewStateWithDir(dir)
@@ -231,12 +228,12 @@ func TestConfigsFileUnknownFpReturns404(t *testing.T) {
 func TestConfigsFileRejectsDuplicateFp(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{
-		{ConfigID: "AAAAAAAAAAAAAAAAAAAAAA", VpnProtocol: "x", Config: json.RawMessage(`{"type":"V2RAY"}`)},
-		{ConfigID: "AAAAAAAAAAAAAAAAAAAAAA", VpnProtocol: "y", Config: json.RawMessage(`{"type":"V2RAY"}`)},
+		{ConfigID: "AAAAAAAAAAAAAAAAAAAAAA", Config: json.RawMessage(`{"type":"V2RAY"}`)},
+		{ConfigID: "AAAAAAAAAAAAAAAAAAAAAA", Config: json.RawMessage(`{"type":"V2RAY"}`)},
 	})
 	_, err := NewStateWithDir(dir)
 	if err == nil {
-		t.Fatalf("expected error on duplicate configFp, got nil")
+		t.Fatalf("expected error on duplicate configId, got nil")
 	}
 	if !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("expected duplicate-related error, got: %v", err)
@@ -266,8 +263,8 @@ func writeConfigs(t *testing.T, dir string, entries []ConfigEntry) {
 }
 
 // buildSignedIssueRequest creates a properly-signed IssueRequest for the
-// given configFp. Used across all /v1/issue test paths.
-func buildSignedIssueRequest(t *testing.T, devPriv *ecdsa.PrivateKey, configFp string) IssueRequest {
+// given configId. Used across all /v1/issue test paths.
+func buildSignedIssueRequest(t *testing.T, devPriv *ecdsa.PrivateKey, configID string) IssueRequest {
 	t.Helper()
 	devPkB64 := compressP256ToB64(t, &devPriv.PublicKey)
 	req := IssueRequest{
@@ -276,19 +273,19 @@ func buildSignedIssueRequest(t *testing.T, devPriv *ecdsa.PrivateKey, configFp s
 		Attestation: AttestationBlob{
 			Platform: "NONE", Token: "", Nonce: b64url.EncodeToString(randomBytes(t, 16)),
 		},
-		ConfigID:     configFp,
+		ConfigID:     configID,
 		RequestNonce: b64url.EncodeToString(randomBytes(t, 16)),
 	}
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 	return req
 }
 
-// mustIssueRaw POSTs a signed request for configFp and returns the raw
+// mustIssueRaw POSTs a signed request for configId and returns the raw
 // response body. Fails on non-200.
-func mustIssueRaw(t *testing.T, ts *httptest.Server, configFp string) []byte {
+func mustIssueRaw(t *testing.T, ts *httptest.Server, configID string) []byte {
 	t.Helper()
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	req := buildSignedIssueRequest(t, devPriv, configFp)
+	req := buildSignedIssueRequest(t, devPriv, configID)
 	body, _ := json.Marshal(req)
 	httpResp, err := http.Post(ts.URL+"/v1/issue", "application/json", bytes.NewReader(body))
 	if err != nil {
