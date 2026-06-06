@@ -159,6 +159,13 @@ device-bound credential each time an app connects.
   above, or `sshConfig.sshPassword` for an SSH config.
 - **`credentialEncoding`**: `uuid-v4` for VLESS/VMess id fields, or
   `base64url-raw` (the default) for SSH passwords / opaque secrets.
+- **`credTtlSec`** *(optional)*: how long each issued credential stays valid,
+  in seconds. Omit (or `0`) for the default of **3600** (1 hour). Must be
+  between **60** and **604800** (7 days). Shorter means recipients re-issue
+  more often but a leaked credential dies sooner; longer is friendlier on a
+  flaky/censored network. Independent of `attestationPolicy` — set it even in
+  the default `off` mode. (Under `soft` mode, an unattested device's
+  credential is capped at the shorter of this and `softFailureTtlSec`.)
 - Restart the server after editing `configs.json` (no hot-reload).
 
 `creator-server mint` (below) prints a fresh `configId` and a ready-to-paste

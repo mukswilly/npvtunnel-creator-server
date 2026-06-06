@@ -38,10 +38,39 @@ type attestationDecision struct {
 	verdict *Verdict
 }
 
-// defaultCredTtl is the credential lifetime when no policy is configured
-// or the policy is "off"/"observe"/"strict" (the soft mode is the only
-// one that shortens it).
+// defaultCredTtl is the credential lifetime used when a config entry
+// doesn't set credTtlSec. The per-config override (resolveCredTtl)
+// supersedes it; the soft mode is the only thing that further shortens
+// the resolved baseline.
 const defaultCredTtl = 1 * time.Hour
+
+// credTtlMin / credTtlMax bound the per-config credTtlSec override,
+// enforced at configs.json load time.
+//
+//   Floor: a credential whose lifetime is shorter than the connect
+//   handshake (clock skew + network latency before the VPN server
+//   validates the HMAC) would expire in flight. 60s leaves margin.
+//
+//   Ceiling: the issuer model exists to mint short-lived, device-bound
+//   credentials. An unbounded TTL quietly reverts it to the static-config
+//   model it replaced, and catches a fat-fingered ms-for-sec value
+//   (e.g. 604800000) before it mints a multi-year credential. 7 days is
+//   generous for "I don't want recipients re-issuing constantly."
+const (
+	credTtlMin = 60 * time.Second
+	credTtlMax = 7 * 24 * time.Hour
+)
+
+// resolveCredTtl picks the baseline credential lifetime for a config
+// entry: the per-entry credTtlSec override, or defaultCredTtl when unset
+// (0). Values are bounds-checked at config load (validateCredTtlSec), so
+// a non-zero CredTtlSec here is already within [credTtlMin, credTtlMax].
+func resolveCredTtl(entry *ConfigEntry) time.Duration {
+	if entry == nil || entry.CredTtlSec <= 0 {
+		return defaultCredTtl
+	}
+	return time.Duration(entry.CredTtlSec) * time.Second
+}
 
 // evaluateAttestationPolicy applies the (possibly-nil) policy to the
 // incoming request and returns what the handler should do.
@@ -65,13 +94,18 @@ const defaultCredTtl = 1 * time.Hour
 // That's honest signal against indifferent malicious clients but not
 // against motivated ones; verifier-backed checking
 // supersedes it whenever the policy names a Verifier.
+//
+// baseTtl is the per-config baseline lifetime (resolveCredTtl). Every
+// "full TTL" outcome uses it verbatim; the soft-mode penalty shortens it
+// but never lengthens it.
 func evaluateAttestationPolicy(
 	policy *AttestationPolicy,
 	attestation AttestationBlob,
 	verifier AttestationVerifier,
+	baseTtl time.Duration,
 ) attestationDecision {
 	if policy == nil || policy.Mode == AttestationModeOff {
-		return attestationDecision{ttl: defaultCredTtl}
+		return attestationDecision{ttl: baseTtl}
 	}
 
 	// Run the verifier if one is configured for this policy. The
@@ -136,22 +170,28 @@ func evaluateAttestationPolicy(
 	switch policy.Mode {
 	case AttestationModeObserve:
 		return attestationDecision{
-			ttl:            defaultCredTtl,
+			ttl:            baseTtl,
 			logAttestation: true,
 			verdict:        verdict,
 		}
 
 	case AttestationModeSoft:
 		if attested {
-			return attestationDecision{ttl: defaultCredTtl, verdict: verdict}
+			return attestationDecision{ttl: baseTtl, verdict: verdict}
 		}
 		// Short TTL for unattested requests under soft mode. Bounds the
-		// blast radius if this device turns out to be compromised.
-		return attestationDecision{ttl: softFailureTtl(policy), verdict: verdict}
+		// blast radius if this device turns out to be compromised. Capped
+		// at baseTtl so a short per-config baseline isn't lengthened by a
+		// larger soft-failure value.
+		ttl := softFailureTtl(policy)
+		if ttl > baseTtl {
+			ttl = baseTtl
+		}
+		return attestationDecision{ttl: ttl, verdict: verdict}
 
 	case AttestationModeStrict:
 		if attested {
-			return attestationDecision{ttl: defaultCredTtl, verdict: verdict}
+			return attestationDecision{ttl: baseTtl, verdict: verdict}
 		}
 		reason := "no attestation claimed"
 		if verdict != nil {
@@ -174,14 +214,14 @@ func evaluateAttestationPolicy(
 		return attestationDecision{
 			reject:       true,
 			rejectReason: reason,
-			ttl:          defaultCredTtl,
+			ttl:          baseTtl,
 			verdict:      verdict,
 		}
 	}
 
 	// Unrecognized mode shouldn't happen — validAttestationMode runs at
 	// configs.json load. Defense in depth: treat as "off".
-	return attestationDecision{ttl: defaultCredTtl}
+	return attestationDecision{ttl: baseTtl}
 }
 
 // claimsAttestation returns true when the client sent something in the

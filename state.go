@@ -91,6 +91,19 @@ type ConfigEntry struct {
 	// and is the back-compat default — existing configs.json without this
 	// field keeps working unchanged.
 	AttestationPolicy *AttestationPolicy `json:"attestationPolicy,omitempty"`
+
+	// CredTtlSec is the session-credential lifetime in seconds — how long
+	// the credential minted at /v1/issue stays valid. Lives on the entry
+	// (not on AttestationPolicy) so a creator running mode "off" can tune
+	// it without configuring an attestation policy.
+	//
+	//   0 / absent : default (defaultCredTtl, 1 hour).
+	//   > 0        : that many seconds, bounds-checked at load to
+	//                [credTtlMin, credTtlMax] (60s .. 7d).
+	//
+	// The soft-mode attestation penalty can shorten this for unattested
+	// requests but never lengthen it.
+	CredTtlSec int `json:"credTtlSec,omitempty"`
 }
 
 // defaultMaxIssuancesPerHour is the sliding-window rate limit applied
@@ -675,6 +688,20 @@ func loadConfigsFile(path string) (map[string]*ConfigEntry, error) {
 						i, entry.ConfigID,
 					)
 				}
+			}
+		}
+		// Credential TTL override (if set) must land within the supported
+		// window. Rejecting at load — rather than silently clamping — means
+		// an operator who fat-fingers the value (e.g. ms instead of s) gets
+		// a clear startup error instead of a surprising credential lifetime.
+		if entry.CredTtlSec != 0 {
+			minSec := int(credTtlMin.Seconds())
+			maxSec := int(credTtlMax.Seconds())
+			if entry.CredTtlSec < minSec || entry.CredTtlSec > maxSec {
+				return nil, fmt.Errorf(
+					"entry %d (configId=%s) credTtlSec = %d: must be 0 (default) or within [%d, %d] seconds",
+					i, entry.ConfigID, entry.CredTtlSec, minSec, maxSec,
+				)
 			}
 		}
 		out[entry.ConfigID] = entry

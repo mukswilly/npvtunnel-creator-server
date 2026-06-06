@@ -113,6 +113,10 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	var configJson json.RawMessage
 	var credentialEncoding string
 	var attestationPolicy *AttestationPolicy
+	// Baseline credential lifetime. Per-config override from the entry
+	// (resolveCredTtl) when a registry is loaded; defaultCredTtl in the
+	// no-registry stub path below.
+	baseTtl := defaultCredTtl
 	if s.state.HasConfigRegistry() {
 		entry := s.state.ConfigByID(req.ConfigID)
 		if entry == nil {
@@ -160,6 +164,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 
 		configJson = entry.Config
 		credentialEncoding = entry.CredentialEncoding
+		baseTtl = resolveCredTtl(entry)
 	} else {
 		// Stub ConfigBody for ephemeral / no-registry mode. Carries no
 		// credential — the wire-protocol harness checks shape + signing,
@@ -189,7 +194,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	decision := evaluateAttestationPolicy(attestationPolicy, req.Attestation, verifier)
+	decision := evaluateAttestationPolicy(attestationPolicy, req.Attestation, verifier, baseTtl)
 	policyMode := ""
 	if attestationPolicy != nil {
 		policyMode = attestationPolicy.Mode
@@ -231,8 +236,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// TTL comes from the attestation-policy decision (defaultCredTtl in
-	// most modes; shorter under "soft" + unattested).
+	// TTL comes from the attestation-policy decision: the per-config
+	// baseline (resolveCredTtl) in most modes; shorter under "soft" +
+	// unattested.
 	expiresAt := time.Now().UTC().Add(decision.ttl).Format(time.RFC3339)
 
 	// Derive the HMAC-bound credential bytes, encode per the entry's
