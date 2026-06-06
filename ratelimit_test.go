@@ -178,7 +178,7 @@ func TestIssueRateLimited(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
+		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"attestationPolicy": {"mode": "observe", "maxIssuancesPerHour": 3}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
@@ -242,7 +242,7 @@ func TestIssueRateLimitIsolatesDevices(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
+		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"attestationPolicy": {"mode": "observe", "maxIssuancesPerHour": 2}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
@@ -283,7 +283,7 @@ func TestIssueRateLimitOffModeUnlimited(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}}
+		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)

@@ -32,8 +32,7 @@ func TestRedeemRoundTrip(t *testing.T) {
 	// configs.json: one entry the token will point at.
 	writeConfigs(t, dir, []ConfigEntry{
 		{
-			ConfigID:           testCID,
-			CredentialEncoding: credEncodingUuidV4,
+			ConfigID: testCID,
 			Config: json.RawMessage(`{
 				"name": "alpha",
 				"address": "vpn-a.example:443",
@@ -41,7 +40,7 @@ func TestRedeemRoundTrip(t *testing.T) {
 				"v2rayProfile": {
 					"server": "vpn-a.example",
 					"serverPort": "443",
-					"password": "$NPVT_CREDENTIAL$"
+					"password": "a1b2c3d4-0000-4000-8000-000000000001"
 				}
 			}`),
 		},
@@ -127,9 +126,8 @@ func TestRedeemRoundTrip(t *testing.T) {
 func TestRedeemReusesConfigIDAcrossRedemptions(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:           testCID,
-		CredentialEncoding: credEncodingUuidV4,
-		Config:             json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
@@ -163,8 +161,8 @@ func TestRedeemReusesConfigIDAcrossRedemptions(t *testing.T) {
 func TestRedeemUnknownTokenReturns404(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
@@ -191,8 +189,8 @@ func TestRedeemUnknownTokenReturns404(t *testing.T) {
 func TestRedeemExhaustedReturns410(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
@@ -224,8 +222,8 @@ func TestRedeemExhaustedReturns410(t *testing.T) {
 func TestRedeemExpiredReturns410(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
@@ -259,8 +257,8 @@ func TestRedeemExpiredReturns410(t *testing.T) {
 func TestRedeemMalformedPubkeyReturns400(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
@@ -295,8 +293,8 @@ func TestRedeemMalformedPubkeyReturns400(t *testing.T) {
 func TestRedeemMissingPublicIssuerURL(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	// Deliberately DON'T set state.PublicIssuerURL.
@@ -329,8 +327,8 @@ func TestRedeemMissingPublicIssuerURL(t *testing.T) {
 func TestRedeemPersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
@@ -379,8 +377,8 @@ func TestRedeemPersistsAcrossRestart(t *testing.T) {
 func TestRedeemConcurrentRedemptionsCannotOverdraw(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
@@ -437,9 +435,8 @@ func TestRedeemConcurrentRedemptionsCannotOverdraw(t *testing.T) {
 func TestRedeemHotReloadsTokensWhenFileChanges(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:           testCID,
-		CredentialEncoding: credEncodingUuidV4,
-		Config:             json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, err := NewStateWithDir(dir)
 	if err != nil {
@@ -495,9 +492,8 @@ func TestRedeemHotReloadsTokensWhenFileChanges(t *testing.T) {
 func TestRedeemHotReloadRespectsRemovedFile(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:           testCID,
-		CredentialEncoding: credEncodingUuidV4,
-		Config:             json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, err := NewStateWithDir(dir)
 	if err != nil {
@@ -540,8 +536,8 @@ func TestRedeemHotReloadRespectsRemovedFile(t *testing.T) {
 func TestRedeemRateLimitedByIP(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
@@ -598,8 +594,8 @@ func invalidCompressedPubkey() []byte {
 func TestRedeemExhaustedSkipsMint(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
@@ -633,8 +629,8 @@ func TestRedeemExhaustedSkipsMint(t *testing.T) {
 func TestRedeemExpiredSkipsMint(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"

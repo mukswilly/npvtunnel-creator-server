@@ -43,14 +43,17 @@ import (
 // # The Config field
 //
 // Config carries a full ConfigBody template — same JSON shape the V1
-// envelope body uses (see the client). Wherever the operator
-// wants the per-session credential to land, they place the literal string
-// [credentialSentinel] ("$NPVT_CREDENTIAL$"). At /v1/issue time the server
-// replaces every occurrence of that sentinel with the HMAC-derived
-// credential, encoded per
-// CredentialEncoding. The substituted ConfigBody is base64url-no-pad
-// encoded into IssueResponse.ConfigB64 — the recipient parses it as a
-// ConfigBody and uses it directly through the normal connect path.
+// envelope body uses. It already holds the working credential the
+// operator wants recipients to use (e.g. v2rayProfile.password,
+// sshConfig.sshPassword). At /v1/issue time the server base64url-no-pad
+// encodes this ConfigBody verbatim into IssueResponse.ConfigB64 — the
+// recipient parses it as a ConfigBody and uses it directly through the
+// normal connect path.
+//
+// The issuer does NOT run or control the VPN data-plane server; it
+// distributes a static, already-working credential for a server run by
+// someone else. The value of the issuer is the attestation / rate-limit
+// gate and the signed receipt, not credential minting.
 //
 // What this buys: every VPN protocol the recipient app's v2ray /
 // SSH config types support works end-to-end with zero extra client
@@ -62,16 +65,9 @@ type ConfigEntry struct {
 	// base64url-no-pad of 16 raw bytes.
 	ConfigID string `json:"configId"`
 
-	// CredentialEncoding names how the HMAC-bound credential bytes get
-	// rendered when substituted into Config's sentinel slot. See
-	// inject.go for the recognized values. Empty defaults to
-	// "base64url-raw" — works for any opaque-string credential slot
-	// (e.g. SSH password). VLESS/VMess UUID slots require "uuid-v4".
-	CredentialEncoding string `json:"credentialEncoding,omitempty"`
-
-	// Config is the full ConfigBody JSON the issuer ships to recipients
-	// (after credential substitution at issue time).
-	// Shape mirrors the ConfigBody JSON the client expects:
+	// Config is the full ConfigBody JSON the issuer ships to recipients,
+	// returned verbatim. Shape mirrors the ConfigBody JSON the client
+	// expects:
 	//
 	//   { "name": "...", "address": "host:port",
 	//     "type": "V2RAY" | "SSH",
@@ -79,8 +75,7 @@ type ConfigEntry struct {
 	//     "sshConfig":    { ... } | null }
 	//
 	// Secret fields (v2rayProfile.password, sshConfig.sshPassword, etc.)
-	// should be set to [credentialSentinel]; the server substitutes the
-	// HMAC-derived credential at mint time.
+	// hold the already-working credential the recipient's app will use.
 	//
 	// Required when this entry is registered for routing — load-time
 	// validation rejects entries with no Config.
@@ -92,10 +87,12 @@ type ConfigEntry struct {
 	// field keeps working unchanged.
 	AttestationPolicy *AttestationPolicy `json:"attestationPolicy,omitempty"`
 
-	// CredTtlSec is the session-credential lifetime in seconds — how long
-	// the credential minted at /v1/issue stays valid. Lives on the entry
-	// (not on AttestationPolicy) so a creator running mode "off" can tune
-	// it without configuring an attestation policy.
+	// CredTtlSec is the issuance TTL in seconds — the recipient re-fetch
+	// cadence carried in IssueResponse.expiresAt. The issuer does not run
+	// the data plane, so this is a client refresh interval, not a server-
+	// enforced credential expiry. Lives on the entry (not on
+	// AttestationPolicy) so a creator running mode "off" can tune it
+	// without configuring an attestation policy.
 	//
 	//   0 / absent : default (defaultCredTtl, 1 hour).
 	//   > 0        : that many seconds, bounds-checked at load to
@@ -121,18 +118,18 @@ const defaultMaxIssuancesPerHour = 10
 //
 // What each mode actually does TODAY:
 //
-//   off      Ignore attestation entirely. Default when AttestationPolicy is nil.
-//   observe  Log what the client claimed (platform, token presence), never block.
-//            Useful as a learn-the-audience phase before turning on enforcement.
-//   soft     Accept all requests, but shorten TTL for clients that don't claim
-//            attestation (platform == NONE). The soft-failure TTL is set by
-//            SoftFailureTtlSec or 300s (5 min) by default. Lets a creator
-//            allow sideloaded / no-Play-Services users to connect with bounded
-//            blast radius if their device is later identified as compromised.
-//   strict   Reject (401 attestation_failed) any request that doesn't claim
-//            attestation. Locks out clients on devices that can't produce a
-//            Play Integrity / App Attest token. Not appropriate for sideload-
-//            heavy audiences.
+//	off      Ignore attestation entirely. Default when AttestationPolicy is nil.
+//	observe  Log what the client claimed (platform, token presence), never block.
+//	         Useful as a learn-the-audience phase before turning on enforcement.
+//	soft     Accept all requests, but shorten TTL for clients that don't claim
+//	         attestation (platform == NONE). The soft-failure TTL is set by
+//	         SoftFailureTtlSec or 300s (5 min) by default. Lets a creator
+//	         allow sideloaded / no-Play-Services users to connect with bounded
+//	         blast radius if their device is later identified as compromised.
+//	strict   Reject (401 attestation_failed) any request that doesn't claim
+//	         attestation. Locks out clients on devices that can't produce a
+//	         Play Integrity / App Attest token. Not appropriate for sideload-
+//	         heavy audiences.
 //
 // What this does NOT yet do:
 //
@@ -299,21 +296,6 @@ type State struct {
 	// string — keeps the input space tight.
 	AuditSalt []byte
 
-	// VpnHmacKey is a 32-byte secret shared between the issuer and the
-	// VPN server. Persisted under stateDir as vpn-hmac-key.bin (0600).
-	// Every issuance receipt's sessionCred is derived as:
-	//   sessionCred = base64url(HMAC-SHA256(vpnHmacKey,
-	//                            "v1.cred|"+devicePk+"|"+expiresAt))
-	// so the VPN server can verify a recipient's claimed credential
-	// without an online RPC to the issuer (it just re-runs the HMAC and
-	// compares). A leaked sessionCred from one device can't be replayed
-	// from a different device — the devicePk is part of the HMAC input,
-	// and the VPN server checks the device that's actually connecting.
-	//
-	// Losing or rotating this key forces every active session to
-	// reconnect. Treat the file like any other long-lived secret.
-	VpnHmacKey []byte
-
 	// stateDir is where persistent files (creator key, configs.json) live.
 	// Empty in tests that don't need persistence.
 	stateDir string
@@ -388,16 +370,12 @@ func (s *State) SweepRateLimiters(window time.Duration) {
 }
 
 // NewState is the in-memory, no-persistence constructor. Generates a fresh
-// creator key, vpn-hmac-key, and audit-salt each call; suitable for tests
-// that don't span restart. Production code path calls NewStateWithDir.
+// creator key and audit-salt each call; suitable for tests that don't span
+// restart. Production code path calls NewStateWithDir.
 func NewState() *State {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		panic("ecdsa.GenerateKey: " + err.Error())
-	}
-	hmacKey := make([]byte, 32)
-	if _, err := rand.Read(hmacKey); err != nil {
-		panic("rand.Read for hmac key: " + err.Error())
 	}
 	auditSalt := make([]byte, 32)
 	if _, err := rand.Read(auditSalt); err != nil {
@@ -405,7 +383,6 @@ func NewState() *State {
 	}
 	return &State{
 		CreatorSigningKey: priv,
-		VpnHmacKey:        hmacKey,
 		AuditSalt:         auditSalt,
 		issuanceLimiter:   newRateLimiter(),
 		verifierRegistry:  newVerifierRegistry(),
@@ -441,11 +418,6 @@ func NewStateWithDir(dir string) (*State, error) {
 		return nil, fmt.Errorf("creator key: %w", err)
 	}
 
-	hmacKey, err := loadOrCreateHmacKey(filepath.Join(dir, "vpn-hmac-key.bin"))
-	if err != nil {
-		return nil, fmt.Errorf("vpn hmac key: %w", err)
-	}
-
 	auditSalt, err := loadOrCreateAuditSalt(filepath.Join(dir, "audit-salt.bin"))
 	if err != nil {
 		return nil, fmt.Errorf("audit salt: %w", err)
@@ -471,7 +443,6 @@ func NewStateWithDir(dir string) (*State, error) {
 
 	return &State{
 		CreatorSigningKey:     priv,
-		VpnHmacKey:            hmacKey,
 		AuditSalt:             auditSalt,
 		stateDir:              dir,
 		configs:               configs,
@@ -502,34 +473,6 @@ func loadOrCreateAuditSalt(path string) ([]byte, error) {
 			return nil, fmt.Errorf("write %s: %w", path, err)
 		}
 		return salt, nil
-	}
-	if len(data) != 32 {
-		return nil, fmt.Errorf("%s: want 32 bytes, got %d (corrupt?)", path, len(data))
-	}
-	return data, nil
-}
-
-// loadOrCreateHmacKey reads a 32-byte HMAC key from path. If the file
-// doesn't exist, generates one and writes it (0600). Returns the key bytes.
-//
-// Refusing to silently regenerate on parse failure is deliberate: the key
-// is pre-shared with the VPN server, so dropping it without warning would
-// break every existing tunnel. If the file exists but is the wrong size,
-// it's almost certainly corruption.
-func loadOrCreateHmacKey(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("read %s: %w", path, err)
-		}
-		key := make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return nil, fmt.Errorf("generate hmac key: %w", err)
-		}
-		if err := os.WriteFile(path, key, 0o600); err != nil {
-			return nil, fmt.Errorf("write %s: %w", path, err)
-		}
-		return key, nil
 	}
 	if len(data) != 32 {
 		return nil, fmt.Errorf("%s: want 32 bytes, got %d (corrupt?)", path, len(data))
@@ -633,20 +576,12 @@ func loadConfigsFile(path string) (map[string]*ConfigEntry, error) {
 				"entry %d (configId=%s): missing required field config", i, entry.ConfigID)
 		}
 		// Config must JSON-decode to an object (the ConfigBody shape).
-		// A scalar or array here would break the sentinel substitution.
+		// A scalar or array here is not a valid config body.
 		var configProbe map[string]any
 		if err := json.Unmarshal(entry.Config, &configProbe); err != nil {
 			return nil, fmt.Errorf(
 				"entry %d (configId=%s) config: not a JSON object: %w",
 				i, entry.ConfigID, err)
-		}
-		// CredentialEncoding must be one we know how to render. An
-		// unknown value would surface at every /v1/issue with a 500;
-		// catching it here is cheaper.
-		if !validCredentialEncoding(entry.CredentialEncoding) {
-			return nil, fmt.Errorf(
-				"entry %d (configId=%s) credentialEncoding=%q: must be one of \"uuid-v4\", \"base64url-raw\", or empty (defaults to base64url-raw)",
-				i, entry.ConfigID, entry.CredentialEncoding)
 		}
 		// Attestation policy mode must be one of the recognized values.
 		// An operator typo ("strikt"/"soft-fail"/etc.) would otherwise

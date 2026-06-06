@@ -204,19 +204,18 @@ func runMintSubcommand(args []string) int {
 			"issuerUrl:     %s\n"+
 			"configId:      %s\n"+
 			"envelope size: %d bytes\n"+
-			"\nAdd this entry to configs.json:\n"+
+			"\nAdd this entry to configs.json (the issuer returns config verbatim):\n"+
 			`{
-  "configId":           "%s",
-  "credentialEncoding": "uuid-v4",
+  "configId": "%s",
   "config": {
     "name":    "<display name>",
-    "address": "<your-vpn-server>:<port>",
+    "address": "<vpn-server>:<port>",
     "type":    "V2RAY",
     "v2rayProfile": {
-      "server":     "<your-vpn-server>",
+      "server":     "<vpn-server>",
       "serverPort": "<port>",
-      "password":   "$NPVT_CREDENTIAL$",
-      "// ...":     "fill in per your VPN data plane"
+      "password":   "a1b2c3d4-0000-4000-8000-000000000001",
+      "// ...":     "the already-working credential your VPN server accepts"
     }
   },
   "attestationPolicy": { "mode": "off" }

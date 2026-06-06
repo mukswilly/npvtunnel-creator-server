@@ -128,7 +128,7 @@ func TestConfigsFileRejectsInvalidAttestationMode(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}},
+		"config": {"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"attestationPolicy": {"mode": "strikt"}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(raw), 0o600)
@@ -145,7 +145,7 @@ func TestConfigsFileRejectsNegativeSoftFailureTtl(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}},
+		"config": {"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"attestationPolicy": {"mode": "soft", "softFailureTtlSec": -5}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(raw), 0o600)
@@ -166,7 +166,7 @@ func TestConfigsFileAcceptsAllValidModes(t *testing.T) {
 			// configId across modes doesn't collide at load time.
 			raw := `[{
 				"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-				"config": {"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}},
+				"config": {"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 				"attestationPolicy": {"mode": "` + mode + `"}
 			}]`
 			os.WriteFile(filepath.Join(dir, "configs.json"), []byte(raw), 0o600)
@@ -186,7 +186,7 @@ func TestIssueStrictModeRejectsRequestWithoutAttestation(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
+		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"attestationPolicy": {"mode": "strict"}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
@@ -213,7 +213,7 @@ func TestIssueStrictModeAllowsRequestWithAttestation(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
+		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"attestationPolicy": {"mode": "strict"}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
@@ -243,7 +243,7 @@ func TestIssueSoftModeShortensTtlForUnattestedRequest(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
+		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"attestationPolicy": {"mode": "soft", "softFailureTtlSec": 60}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
@@ -281,7 +281,7 @@ func TestIssueOffModeUsesFullTtlRegardlessOfAttestation(t *testing.T) {
 	// No attestationPolicy field = "off" by default.
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}}
+		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}}
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
@@ -378,7 +378,7 @@ func TestConfigsFileAcceptsValidCredTtl(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}},
+		"config": {"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"credTtlSec": 7200
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(raw), 0o600)
@@ -394,7 +394,7 @@ func assertCredTtlLoadError(t *testing.T, sec int) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}},
+		"config": {"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"credTtlSec": ` + strconv.Itoa(sec) + `
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(raw), 0o600)
@@ -412,7 +412,7 @@ func TestIssueHonorsConfiguredCredTtl(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"$NPVT_CREDENTIAL$"}},
+		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}},
 		"credTtlSec": 7200
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)

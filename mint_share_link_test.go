@@ -23,8 +23,8 @@ func TestMintShareLinkHappyPath(t *testing.T) {
 		t.Fatalf("init state: %v", err)
 	}
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 
 	rc := runMintShareLinkSubcommand([]string{
@@ -66,8 +66,8 @@ func TestMintShareLinkRejectsUnknownConfigID(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 
 	// Use a syntactically-valid-but-not-registered configId.
@@ -93,8 +93,8 @@ func TestMintShareLinkRequiresHttps(t *testing.T) {
 	dir := t.TempDir()
 	NewStateWithDir(dir)
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 
 	rc := runMintShareLinkSubcommand([]string{
@@ -113,8 +113,8 @@ func TestMintShareLinkExpiresInIsApplied(t *testing.T) {
 	dir := t.TempDir()
 	NewStateWithDir(dir)
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:    testCID,
-		Config:      json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+		ConfigID: testCID,
+		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 
 	rc := runMintShareLinkSubcommand([]string{

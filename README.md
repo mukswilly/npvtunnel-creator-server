@@ -9,10 +9,9 @@ a config to their users — the **share-link** way.
 
 You run it (on a cheap VPS) only if you want users to get your config by
 **tapping a link** instead of you sending them a config file. When someone taps
-your link, this server gives their app the config — and it builds that config
-**fresh each time the app connects**, so the config never sits inside the file
-or link you posted publicly, and a leaked credential is short-lived and bound to
-the one device that fetched it.
+your link, this server gives their app the config — so the config never sits
+inside the file or link you posted publicly. Each handout is gated (attestation
+and rate limits, both optional) and carries a signed receipt the app verifies.
 
 > **Don't want to run anything?** You don't have to. NpvTunnel also exports
 > configs as plain files — including passphrase-protected ones — with no server
@@ -49,16 +48,19 @@ sits beside them and only handles *distributing the config that points at them*:
    │ (config handout) │
    └────────┬─────────┘
             │  each time the user's app connects, it asks this server for the
-            └─ config, which is built on the spot: your config + a short-lived
-               credential bound to that one device.
+            └─ config, which you authored in configs.json and which already
+               carries the working credential your VPN server accepts.
 ```
 
 So:
 
 - **The link/file you post contains no config** — just a pointer to this server.
-- **The real config is fetched per-connection**, valid ~1h, tied to one device.
-  A leaked copy expires fast and, because the credential is bound to the
-  device that fetched it, can't be replayed from anywhere else.
+- **The real config is fetched from this server**, gated by your attestation /
+  rate-limit policy, with a signed receipt the app verifies before using it.
+- **This server does not run or control your VPN server.** It distributes a
+  static, already-working credential you placed in `configs.json` for a data
+  plane run by you (or whoever runs it). The `expiresAt` it returns is a
+  client *re-fetch cadence*, not a server-enforced expiry.
 
 ---
 
@@ -117,9 +119,9 @@ backed-up state directory.
    sudo systemctl enable --now creator-server
    curl -sS http://127.0.0.1:8443/healthz   # → ok
    ```
-6. **⚠ Back up your keys.** First run generates `creator-key.pem` and
-   `vpn-hmac-key.bin` in the state dir. **Losing them breaks every recipient.**
-   Copy them somewhere safe, off the box. See [State & backups](#state--backups).
+6. **⚠ Back up your key.** First run generates `creator-key.pem` in the state
+   dir. **Losing it breaks every recipient** (they pin its public half).
+   Copy it somewhere safe, off the box. See [State & backups](#state--backups).
 
 ---
 
@@ -129,15 +131,14 @@ backed-up state directory.
 
 Configs live in `<state-dir>/configs.json`. Each entry pairs a stable 16-byte
 `configId` with the config you want to hand out — pointing at **your** VPN
-server — and marks where the per-connection credential goes with the sentinel
-**`$NPVT_CREDENTIAL$`**. The server replaces that sentinel with a fresh,
-device-bound credential each time an app connects.
+server. Put the **already-working credential** your VPN server accepts straight
+into the config. The server returns this config **verbatim** to gated
+recipients; it does not mint, derive, or rewrite the credential.
 
 ```json
 [
   {
     "configId": "base64url-no-pad of 16 random bytes",
-    "credentialEncoding": "uuid-v4",
     "config": {
       "name": "My config",
       "address": "vpn.yourdomain.example:443",
@@ -145,7 +146,7 @@ device-bound credential each time an app connects.
       "v2rayProfile": {
         "server": "vpn.yourdomain.example",
         "serverPort": "443",
-        "password": "$NPVT_CREDENTIAL$"
+        "password": "a1b2c3d4-0000-4000-8000-000000000001"
       }
     }
   }
@@ -155,17 +156,17 @@ device-bound credential each time an app connects.
 - **`config`** is a complete **v2ray** or **SSH** config — the only two protocols
   NpvTunnel supports. `config.type` (`V2RAY` or `SSH`) picks which; everything
   else (server address, port, transport settings) is just that protocol's normal
-  fields. Mark the credential slot with `$NPVT_CREDENTIAL$` — `v2rayProfile.password`
-  above, or `sshConfig.sshPassword` for an SSH config.
-- **`credentialEncoding`**: `uuid-v4` for VLESS/VMess id fields, or
-  `base64url-raw` (the default) for SSH passwords / opaque secrets.
-- **`credTtlSec`** *(optional)*: how long each issued credential stays valid,
-  in seconds. Omit (or `0`) for the default of **3600** (1 hour). Must be
-  between **60** and **604800** (7 days). Shorter means recipients re-issue
-  more often but a leaked credential dies sooner; longer is friendlier on a
-  flaky/censored network. Independent of `attestationPolicy` — set it even in
-  the default `off` mode. (Under `soft` mode, an unattested device's
-  credential is capped at the shorter of this and `softFailureTtlSec`.)
+  fields. The credential goes in the slot your server checks —
+  `v2rayProfile.password` above (a UUID for VLESS/VMess), or
+  `sshConfig.sshPassword` for an SSH config.
+- **`credTtlSec`** *(optional)*: how long before the app should re-fetch the
+  config, in seconds — carried back as `expiresAt`. Omit (or `0`) for the
+  default of **3600** (1 hour). Must be between **60** and **604800** (7 days).
+  Because this server doesn't run your data plane, this is a client re-fetch
+  cadence, not a server-enforced credential expiry. Independent of
+  `attestationPolicy` — set it even in the default `off` mode. (Under `soft`
+  mode, an unattested device re-fetches at the shorter of this and
+  `softFailureTtlSec`.)
 - Restart the server after editing `configs.json` (no hot-reload).
 
 `creator-server mint` (below) prints a fresh `configId` and a ready-to-paste
@@ -236,7 +237,7 @@ audience.
 |---|---|
 | `off` (default) | Ignore attestation. |
 | `observe` | Log what the client claimed; never block. |
-| `soft` | Serve everyone, but give a shorter credential to unattested devices (`softFailureTtlSec`, default 300s). |
+| `soft` | Serve everyone, but make unattested devices re-fetch sooner (`softFailureTtlSec`, default 300s). |
 | `strict` | Reject devices that can't produce a Play Integrity / App Attest token. |
 
 For real hardware checks, name a `verifier` and opt into gates:
@@ -261,7 +262,7 @@ is the iOS equivalent (set `appId` to `TEAMID.bundle.id`; don't set
 > for sideload-heavy audiences. Many users in censored regions run rooted phones
 > *by necessity*, and these gates lock them out. They're for managed audiences
 > where everyone is on stock firmware. Open audiences should leave attestation
-> `off` and rely on short credential TTLs + device-bound credentials.
+> `off` and rely on short re-fetch cadences + your own data-plane rotation.
 
 ### Rate limit
 
@@ -280,7 +281,6 @@ With `-state-dir` set, the server keeps these files (`0600`, owner `creator`):
 | File | What it is | Lose it and… |
 |---|---|---|
 | `creator-key.pem` | Your identity — the signing key recipients pin | every recipient must re-import. **Back up.** |
-| `vpn-hmac-key.bin` | Shared secret with your VPN server | active sessions reconnect. **Back up.** |
 | `audit-salt.bin` | Salt that hashes device IDs in the audit log | log correlation resets (nothing cryptographic). |
 | `configs.json` | The configs you hand out — **you write this** | nothing to hand out. |
 | `redemption-tokens.json` | Live share-link tokens — **managed by the subcommands** | outstanding links stop working. |
@@ -316,22 +316,21 @@ attestation tokens, no IPs, no secrets** — device IDs are salted-hashed
 
 ### The VPN-server contract
 
-This server doesn't run your tunnel — it builds configs that your **own** VPN
-server validates. The credential in each config is:
+This server doesn't run your tunnel and has no access to your data plane. It
+hands out the static config you wrote in `configs.json`, **verbatim**, including
+whatever credential your VPN server already accepts (a VLESS UUID, an SSH
+password, etc.). Provisioning that credential on your v2ray/SSH server, and
+rotating it when you need to, is your job and is intentionally out of scope here.
 
-```
-HMAC-SHA256(vpn-hmac-key, "v1.cred|" + devicePk + "|" + expiresAt)
-```
+What this server adds on top of just posting the config publicly: the handout is
+gated by your attestation / rate-limit policy, and every response carries a
+receipt signed by `creator-key.pem` that the app verifies before using the
+config. To bound the blast radius of a leak, keep credentials cheap to rotate on
+your data plane and use short `credTtlSec` re-fetch cadences so recipients pick
+up a rotation quickly.
 
-(then encoded per `credentialEncoding`). Pre-share `vpn-hmac-key.bin` with your
-VPN server and have it recompute that HMAC over the connecting device + expiry
-and compare. **That binding is what makes a leaked credential useless from
-another device** — without it on your VPN server, the credential is just a
-static secret. Wiring that into your v2ray/SSH data plane is your job and is
-intentionally out of scope here.
-
-The server is a single instance; rate-limit counters and the credential cache
-are in-memory and per-process.
+The server is a single instance; rate-limit counters are in-memory and
+per-process.
 
 ---
 
@@ -380,7 +379,7 @@ Run any with `-h` for full flags.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/issue` | Build the config for one connection: your `configs.json` template with a fresh device-bound credential, signed. Called by the app on every connect. |
+| `POST /v1/issue` | Return your `configs.json` config verbatim, gated by your policy and signed. Called by the app to (re-)fetch the config. |
 | `POST /v1/redeem` | Turn a share-link token into a per-recipient discovery pointer (not the config). |
 | `GET /v1/creator-pubkey` | The creator's public signing key (dev/test; recipients pin it from the pointer). |
 | `GET /healthz` | Liveness probe (`ok`). |

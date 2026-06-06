@@ -110,8 +110,7 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 
 	configs := []ConfigEntry{
 		{
-			ConfigID:           "AAAAAAAAAAAAAAAAAAAAAA",
-			CredentialEncoding: credEncodingUuidV4,
+			ConfigID: "AAAAAAAAAAAAAAAAAAAAAA",
 			Config: json.RawMessage(`{
 				"name": "alpha",
 				"address": "vpn-a.example:443",
@@ -119,15 +118,14 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 				"v2rayProfile": {
 					"server": "vpn-a.example",
 					"serverPort": "443",
-					"password": "$NPVT_CREDENTIAL$",
+					"password": "a1b2c3d4-0000-4000-8000-000000000001",
 					"sni": "a.example",
 					"fingerPrint": "chrome"
 				}
 			}`),
 		},
 		{
-			ConfigID:           "EBAQEBAQEBAQEBAQEBAQEA",
-			CredentialEncoding: credEncodingBase64UrlRaw,
+			ConfigID: "EBAQEBAQEBAQEBAQEBAQEA",
 			Config: json.RawMessage(`{
 				"name": "bravo",
 				"address": "vpn-b.example:8443",
@@ -136,7 +134,7 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 					"sshHost": "vpn-b.example",
 					"sshPort": 8443,
 					"sshUsername": "user",
-					"sshPassword": "$NPVT_CREDENTIAL$"
+					"sshPassword": "static-ssh-password-xyz"
 				}
 			}`),
 		},
@@ -166,8 +164,8 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 	if profileA["sni"] != "a.example" {
 		t.Fatalf("fp-A sni = %v", profileA["sni"])
 	}
-	if profileA["password"] == credentialSentinel {
-		t.Fatalf("fp-A credential sentinel was not substituted")
+	if profileA["password"] != "a1b2c3d4-0000-4000-8000-000000000001" {
+		t.Fatalf("fp-A credential not returned verbatim, got %v", profileA["password"])
 	}
 
 	// fp-B: SSH routing — completely different protocol, same code path.
@@ -181,8 +179,8 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 	if sshB["sshHost"] != "vpn-b.example" {
 		t.Fatalf("fp-B sshHost = %v", sshB["sshHost"])
 	}
-	if sshB["sshPassword"] == credentialSentinel {
-		t.Fatalf("fp-B credential sentinel was not substituted")
+	if sshB["sshPassword"] != "static-ssh-password-xyz" {
+		t.Fatalf("fp-B credential not returned verbatim, got %v", sshB["sshPassword"])
 	}
 }
 
@@ -194,7 +192,7 @@ func TestConfigsFileUnknownFpReturns404(t *testing.T) {
 	writeConfigs(t, dir, []ConfigEntry{
 		{
 			ConfigID: "AAAAAAAAAAAAAAAAAAAAAA",
-			Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"$NPVT_CREDENTIAL$"}}`),
+			Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 		},
 	})
 	state, err := NewStateWithDir(dir)

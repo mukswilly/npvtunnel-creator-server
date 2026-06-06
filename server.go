@@ -54,12 +54,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 //  2. Look up the ConfigEntry by req.ConfigID (404 if unknown).
 //  3. Apply per-(device, config) rate limit.
 //  4. Evaluate attestation policy; reject / shorten TTL as configured.
-//  5. Compute the HMAC-bound credential bytes, encode per
-//     ConfigEntry.CredentialEncoding, and substitute every occurrence of
-//     credentialSentinel in the ConfigBody with the encoded form.
-//  6. base64url-no-pad the substituted ConfigBody → ConfigB64.
-//  7. Sign the receipt (covers devicePk, requestNonce, expiresAt, ConfigB64).
-//  8. Emit the audit record and return 200 with IssueResponse.
+//  5. base64url-no-pad the routed entry's static ConfigBody → ConfigB64.
+//  6. Sign the receipt (covers devicePk, requestNonce, expiresAt, ConfigB64).
+//  7. Emit the audit record and return 200 with IssueResponse.
 func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
 	if err != nil {
@@ -111,7 +108,6 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	// ConfigBody so the wire-protocol harness keeps working without a
 	// registry.
 	var configJson json.RawMessage
-	var credentialEncoding string
 	var attestationPolicy *AttestationPolicy
 	// Baseline credential lifetime. Per-config override from the entry
 	// (resolveCredTtl) when a registry is loaded; defaultCredTtl in the
@@ -163,7 +159,6 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 
 		configJson = entry.Config
-		credentialEncoding = entry.CredentialEncoding
 		baseTtl = resolveCredTtl(entry)
 	} else {
 		// Stub ConfigBody for ephemeral / no-registry mode. Carries no
@@ -238,33 +233,14 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 
 	// TTL comes from the attestation-policy decision: the per-config
 	// baseline (resolveCredTtl) in most modes; shorter under "soft" +
-	// unattested.
+	// unattested. Since the issuer doesn't run the data plane, this is a
+	// recipient re-fetch cadence carried in expiresAt, not a server-side
+	// credential expiry.
 	expiresAt := time.Now().UTC().Add(decision.ttl).Format(time.RFC3339)
 
-	// Derive the HMAC-bound credential bytes, encode per the entry's
-	// CredentialEncoding, and substitute into the merged ConfigBody
-	// template. Same HMAC construction the VPN data plane re-runs to
-	// validate the connecting client — different encoding per protocol.
-	//
-	// Skip substitution when no registry is loaded (the stub path has no
-	// sentinel anyway, so a no-op walk would be wasted work).
-	if s.state.HasConfigRegistry() {
-		hmacBytes := deriveCredentialBytes(s.state.VpnHmacKey, req.DevicePk, expiresAt)
-		encoded, encErr := encodeCredential(credentialEncoding, hmacBytes)
-		if encErr != nil {
-			writeIssueError(w, http.StatusInternalServerError, "server_error",
-				"encode credential: "+encErr.Error())
-			return
-		}
-		substituted, subErr := injectCredential(configJson, encoded)
-		if subErr != nil {
-			writeIssueError(w, http.StatusInternalServerError, "server_error",
-				"inject credential: "+subErr.Error())
-			return
-		}
-		configJson = substituted
-	}
-
+	// The routed entry's ConfigBody already holds the operator's static,
+	// already-working credential. Return it verbatim — no per-request
+	// credential derivation or substitution.
 	resp := IssueResponse{
 		ConfigB64: b64url.EncodeToString(configJson),
 		ExpiresAt: expiresAt,

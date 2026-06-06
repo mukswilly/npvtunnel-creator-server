@@ -39,8 +39,7 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 	// Server setup: one configs.json entry, one redemption token.
 	// Both use the same testCID (the routing key).
 	writeConfigs(t, dir, []ConfigEntry{{
-		ConfigID:           testCID,
-		CredentialEncoding: credEncodingUuidV4,
+		ConfigID: testCID,
 		Config: json.RawMessage(`{
 			"name": "alpha",
 			"address": "vpn-a.example:443",
@@ -48,7 +47,7 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 			"v2rayProfile": {
 				"server": "vpn-a.example",
 				"serverPort": "443",
-				"password": "$NPVT_CREDENTIAL$"
+				"password": "a1b2c3d4-0000-4000-8000-000000000001"
 			}
 		}`),
 	}})
@@ -151,10 +150,9 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 			issueResp.StatusCode, issueRespBytes)
 	}
 
-	// And the issued ConfigBody decodes + carries the substituted
-	// credential. (Same property TestIssueRoundTripCredIsHmacDerived
-	// verifies in isolation; here we're confirming the *path through
-	// /v1/redeem* still arrives at it.)
+	// And the issued ConfigBody decodes + carries the operator's static
+	// credential verbatim. (Here we're confirming the *path through
+	// /v1/redeem* still arrives at the routed configs.json entry.)
 	var resp IssueResponse
 	if err := json.Unmarshal(issueRespBytes, &resp); err != nil {
 		t.Fatalf("parse issue response: %v", err)
@@ -168,7 +166,7 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 		t.Fatalf("parse inner config: %v", err)
 	}
 	profile, _ := cfg["v2rayProfile"].(map[string]any)
-	if profile["password"] == credentialSentinel {
-		t.Fatalf("$NPVT_CREDENTIAL$ sentinel was not substituted in the issued config")
+	if profile["password"] != "a1b2c3d4-0000-4000-8000-000000000001" {
+		t.Fatalf("issued config did not carry the static credential verbatim, got: %v", profile["password"])
 	}
 }

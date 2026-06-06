@@ -29,25 +29,6 @@ func TestConfigsFileLoadRejectsMissingConfig(t *testing.T) {
 	}
 }
 
-// TestConfigsFileLoadRejectsUnknownCredentialEncoding — typos on the
-// encoding name caught at startup rather than at every issuance.
-func TestConfigsFileLoadRejectsUnknownCredentialEncoding(t *testing.T) {
-	dir := t.TempDir()
-	raw := `[{
-		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
-		"credentialEncoding": "uuid-v3",
-		"config": {"type":"V2RAY"}
-	}]`
-	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(raw), 0o600)
-	_, err := NewStateWithDir(dir)
-	if err == nil {
-		t.Fatalf("expected load failure on unknown credentialEncoding")
-	}
-	if !strings.Contains(err.Error(), "credentialEncoding") {
-		t.Fatalf("expected credentialEncoding message, got: %v", err)
-	}
-}
-
 // decodeIssueResponseConfig parses an /v1/issue response body and
 // returns the decoded ConfigBody as a generic map. Shared helper for
 // the tests that need to inspect the issued config.

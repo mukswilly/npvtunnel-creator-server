@@ -36,21 +36,20 @@ type IssueRequest struct {
 
 // IssueResponse is the success body of POST /v1/issue.
 //
-// The wire shape collapses to a single ConfigBody
-// payload (base64url-no-pad of its JSON). The session credential is
-// inside that payload at whichever slot the operator's configs.json
-// template put the sentinel — typically v2rayProfile.password or
-// sshConfig.sshPassword. No more sessionCred / serverAddress /
-// vpnProtocol / transportParams on the wire: the ConfigBody carries
-// them as part of the V2rayProfile / SshConfig.
+// The wire shape collapses to a single ConfigBody payload (base64url-no-
+// pad of its JSON), returned verbatim from the routed configs.json entry.
+// The already-working credential lives inside that payload at whichever
+// slot the operator's config put it — typically v2rayProfile.password or
+// sshConfig.sshPassword. The issuer does not control the data-plane
+// server, so it neither mints nor mutates the credential.
 type IssueResponse struct {
 	// ConfigB64 is base64url-no-pad of a ConfigBody JSON. The recipient
 	// decodes and parses it through the same path V1 envelope bodies use,
 	// so every protocol the V1 path supports automatically works here.
 	ConfigB64 string `json:"configB64"`
-	// ExpiresAt is the RFC3339 UTC timestamp the embedded credential
-	// stops being valid at. The recipient should discard the ConfigBody
-	// and re-issue once this passes.
+	// ExpiresAt is the RFC3339 UTC timestamp at which the recipient should
+	// re-fetch. Since the issuer doesn't run the data plane this is a
+	// client re-fetch cadence, not a server-side credential expiry.
 	ExpiresAt string `json:"expiresAt"`
 	// ReceiptSig is ECDSA-P256 P1363, base64url-no-pad. Covers
 	// "v1.receipt|" + devicePk + "|" + requestNonce + "|" + expiresAt + "|" + configB64.

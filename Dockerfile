@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/creator-server /usr/local/bin/creator-server
 
-# Persistent state (creator-key.pem, vpn-hmac-key.bin, configs.json, …).
+# Persistent state (creator-key.pem, configs.json, …).
 # Mount a volume here so keys survive restarts.
 VOLUME ["/var/lib/creator-server"]
 EXPOSE 8443

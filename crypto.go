@@ -116,26 +116,6 @@ func issueReceiptSigningInput(devicePk, requestNonce string, resp *IssueResponse
 	return []byte("v1.receipt|" + devicePk + "|" + requestNonce + "|" + resp.ExpiresAt + "|" + resp.ConfigB64)
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Session credential — HMAC binding to the requesting device.
-//
-// The issuer derives a credential bound to (vpnHmacKey, devicePk,
-// expiresAt) and injects it into the ConfigBody template's sentinel
-// slot (see inject.go). Domain-separated from request/receipt signing
-// inputs by the "v1.cred|" prefix.
-//
-// The VPN data plane holds the same vpnHmacKey. When a connection
-// arrives, it re-runs the HMAC over the claimed (devicePk, expiresAt),
-// re-encodes per the protocol's CredentialEncoding, and constant-time
-// compares with what the client presented (VLESS UUID, SSH password,
-// etc.).
-//
-// A leaked credential from one device can't be replayed from a different
-// device because devicePk is part of the HMAC input.
-// ──────────────────────────────────────────────────────────────────
-
-const sessionCredPrefix = "v1.cred|"
-
 // signReceipt signs the canonical receipt input with the creator's signing
 // key, producing the P1363-format 64-byte signature, base64url-no-pad
 // encoded. The result is what goes in IssueResponse.ReceiptSig.

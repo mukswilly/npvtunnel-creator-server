@@ -170,7 +170,7 @@ Next steps:
   3. Start it:
        sudo systemctl enable --now creator-server
        sudo journalctl -u creator-server -n 20 --no-pager
-  4. BACK UP ${STATE_DIR}/creator-key.pem and vpn-hmac-key.bin once generated.
+  4. BACK UP ${STATE_DIR}/creator-key.pem once generated.
 
 Mint a share link:
   sudo -u creator ${INSTALL_DIR}/${BIN} mint-share-link --help
