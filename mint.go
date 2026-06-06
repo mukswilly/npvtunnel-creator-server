@@ -34,9 +34,10 @@ func runMintSubcommand(args []string) int {
 
 	stateDir := fs.String("state-dir", "",
 		"directory holding creator-key.pem (required — must match the running server)")
-	recipientPubkeyB64 := fs.String("recipient-pubkey", "",
-		"base64url-no-pad of one recipient's P-256 compressed pubkey (33 bytes). "+
-			"Repeat the flag for multiple recipients.")
+	var recipientPubkeys multiStringFlag
+	fs.Var(&recipientPubkeys, "recipient-pubkey",
+		"base64url-no-pad of a recipient's P-256 compressed pubkey (33 bytes). "+
+			"For multiple recipients, repeat the flag or pass a comma-separated list.")
 	recipientPubkeysFile := fs.String("recipient-pubkeys-file", "",
 		"path to a file containing one base64url-no-pad recipient pubkey per line. "+
 			"Combined with -recipient-pubkey flags if both supplied.")
@@ -57,12 +58,6 @@ func runMintSubcommand(args []string) int {
 	outFile := fs.String("out", "",
 		"if set, write raw envelope bytes to this file (recipients import the file as-is); "+
 			"the stdout summary still prints the base64 envelope too")
-
-	// Note: this is a multi-flag manually because flag.StringVar doesn't
-	// natively handle "repeated flag" without a custom Value impl.
-	var extraRecipients multiStringFlag
-	fs.Var(&extraRecipients, "recipient-pubkey-extra",
-		"alias for -recipient-pubkey when shell-script generating multiple flags")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -107,16 +102,15 @@ func runMintSubcommand(args []string) int {
 		pubkeys = append(pubkeys, raw)
 		return nil
 	}
-	if *recipientPubkeyB64 != "" {
-		if err := addPubkey(*recipientPubkeyB64); err != nil {
-			fmt.Fprintln(os.Stderr, "mint:", err)
-			return 1
-		}
-	}
-	for _, p := range extraRecipients {
-		if err := addPubkey(p); err != nil {
-			fmt.Fprintln(os.Stderr, "mint:", err)
-			return 1
+	// Each -recipient-pubkey occurrence may itself be a comma-separated
+	// list, so a single flag can carry several recipients without
+	// repeating it. (base64url has no commas, so the split is safe.)
+	for _, entry := range recipientPubkeys {
+		for _, p := range strings.Split(entry, ",") {
+			if err := addPubkey(p); err != nil {
+				fmt.Fprintln(os.Stderr, "mint:", err)
+				return 1
+			}
 		}
 	}
 	if *recipientPubkeysFile != "" {

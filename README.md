@@ -202,11 +202,11 @@ creator-server mint \
   -out recipient.npvs
 ```
 
-For several people, put one pubkey per line in a file and pass
-`-recipient-pubkeys-file` (or repeat the `-recipient-pubkey-extra` alias —
-plain `-recipient-pubkey` takes a single value). It prints the `configId` and a
-`configs.json` template; register that entry, then send each person the `.npvs`
-file (any channel — it has no config in it).
+For several people, repeat `-recipient-pubkey` or give it a comma-separated
+list (`-recipient-pubkey A,B,C`) — or pass `-recipient-pubkeys-file` with one
+pubkey per line. It prints the `configId` and a `configs.json` template;
+register that entry, then send each person the `.npvs` file (any channel — it
+has no config in it).
 
 ### 3. Burn a leaked share link
 
@@ -371,7 +371,7 @@ Run any with `-h` for full flags.
 | Command | Purpose | Key flags |
 |---|---|---|
 | (none) | Run the server. | the table above |
-| `mint` | Make a discovery pointer (`.npvs`) for known recipient pubkey(s). | `-state-dir`, `-recipient-pubkey` (+ `-recipient-pubkey-extra`, repeatable) / `-recipient-pubkeys-file`, `-issuer-url`, `-out` |
+| `mint` | Make a discovery pointer (`.npvs`) for known recipient pubkey(s). | `-state-dir`, `-recipient-pubkey` (repeatable / comma-list) / `-recipient-pubkeys-file`, `-issuer-url`, `-out` |
 | `mint-share-link` | Make a `npvtunnel://join` link + redemption token. | `-state-dir`, `-config-id`, `-redemption-url`, `-redemptions`, `-expires-in`, `-label` |
 | `revoke-token` | Burn a leaked share-link token. | `-state-dir`, `-token` |
 | `version` | Print build version. | — |
