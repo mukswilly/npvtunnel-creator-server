@@ -96,10 +96,9 @@ type envelopeRecipient struct {
 // produce — required for the envelope signature to verify on the
 // recipient side (the recipient re-canonicalizes and checks the sig).
 type issuerBody struct {
-	Kind          string  `json:"kind"`
-	CreatorPubkey string  `json:"creatorPubkey"`
-	IssuerURL     string  `json:"issuerUrl"`
-	MinAppVersion *string `json:"minAppVersion,omitempty"`
+	Kind          string `json:"kind"`
+	CreatorPubkey string `json:"creatorPubkey"`
+	IssuerURL     string `json:"issuerUrl"`
 }
 
 const issuerBodyKindV2 = "v2-issuer"
@@ -131,9 +130,6 @@ type mintInput struct {
 	RecipientPubKeys [][]byte
 	// IssuerURL is the creator-server's public /v1/issue endpoint.
 	IssuerURL string
-	// MinAppVersion is informational; recipients can warn if their
-	// app is older.
-	MinAppVersion string
 	// ConfigID is 16 bytes; if nil the minter generates one.
 	ConfigID []byte
 	// IssuedAt is the wall-clock timestamp; if zero the minter
@@ -279,7 +275,6 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		Kind:          issuerBodyKindV2,
 		CreatorPubkey: b64url.EncodeToString(creatorPub),
 		IssuerURL:     in.IssuerURL,
-		MinAppVersion: ptrOrNil(in.MinAppVersion),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode issuer body: %w", err)

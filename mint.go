@@ -43,8 +43,6 @@ func runMintSubcommand(args []string) int {
 			"Combined with -recipient-pubkey flags if both supplied.")
 	issuerURL := fs.String("issuer-url", "",
 		"HTTPS URL of this server's /v1/issue endpoint (required)")
-	minAppVersion := fs.String("min-app-version", "",
-		"informational minimum app version that understands this body shape")
 	expiresAtStr := fs.String("expires-at", "",
 		"optional ISO-8601 envelope expiry (e.g. 2027-01-01T00:00:00Z)")
 	displayMessage := fs.String("display-message", "",
@@ -170,7 +168,6 @@ func runMintSubcommand(args []string) int {
 		CreatorKey:       creatorKey,
 		RecipientPubKeys: pubkeys,
 		IssuerURL:        *issuerURL,
-		MinAppVersion:    *minAppVersion,
 		Policy:           &pol,
 	})
 	if err != nil {
