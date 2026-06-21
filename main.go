@@ -105,11 +105,20 @@ func csvHasDefaultRoute(csv string) bool {
 }
 
 func main() {
+	// Bare `creator-server` on an interactive terminal opens the management
+	// console. With any args/flags — or no TTY, e.g. under systemd — it runs
+	// the issuer server, so existing units + ops scripts are unaffected.
+	if len(os.Args) == 1 && stdinIsTTY() {
+		os.Exit(runMenuSubcommand(nil))
+	}
+
 	// Subcommand dispatch. The default (no subcommand) preserves the
 	// existing flag-based server entrypoint, so existing systemd units
 	// + ops scripts keep working unchanged.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "menu", "console", "tui":
+			os.Exit(runMenuSubcommand(os.Args[2:]))
 		case "mint":
 			os.Exit(runMintSubcommand(os.Args[2:]))
 		case "mint-share-link":
@@ -138,6 +147,7 @@ func main() {
 			if !strings.HasPrefix(os.Args[1], "-") {
 				fmt.Fprintf(os.Stderr,
 					"creator-server: unknown subcommand %q\n"+
+						"  console:        menu  (interactive; also: bare `creator-server` on a terminal)\n"+
 						"  setup & manage: init, config, token, status, backup\n"+
 						"  share/handout:  mint-share-link, revoke-token, mint\n"+
 						"  other:          version\n"+

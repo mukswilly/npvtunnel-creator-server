@@ -225,6 +225,13 @@ Register a config, then mint a share link:
 EOF
 fi
 
+cat <<EOF
+
+Manage it interactively (full-screen console — register configs, mint
+links, burn tokens, check status, back up):
+  sudo -u creator ${INSTALL_DIR}/${BIN} menu -state-dir ${STATE_DIR}
+EOF
+
 cat <<'EOF'
 
 Harden the box (recommended — this server enforces fairness, but a

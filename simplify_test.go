@@ -167,6 +167,47 @@ func TestDecodeConfigString(t *testing.T) {
 	}
 }
 
+// TestConsoleBuilds verifies the console constructs and that every screen
+// builder runs without panicking (no terminal / event loop needed). Empty-
+// state screens fall through to a modal; the real screens add their page.
+func TestConsoleBuilds(t *testing.T) {
+	c, err := newConsole(t.TempDir())
+	if err != nil {
+		t.Fatalf("newConsole: %v", err)
+	}
+	if !c.pages.HasPage("main") {
+		t.Fatal("console is missing its main page after construction")
+	}
+
+	c.showAddConfig()
+	if !c.pages.HasPage("addconfig") {
+		t.Fatal("addconfig page missing")
+	}
+	c.showStatus()
+	if !c.pages.HasPage("status") {
+		t.Fatal("status page missing")
+	}
+	// Empty-state screens (no configs / no tokens yet) and the backup
+	// confirm just need to build without panicking.
+	c.showConfigs()
+	c.showTokens()
+	c.showMint("")
+	c.showBackup()
+
+	// With a registered config, the configs table + mint form build.
+	if _, err := c.appendConfig([]byte(`{"name":"x","type":"V2RAY"}`)); err != nil {
+		t.Fatalf("appendConfig: %v", err)
+	}
+	c.showConfigs()
+	if !c.pages.HasPage("configs") {
+		t.Fatal("configs page missing after a config was added")
+	}
+	c.showMint("")
+	if !c.pages.HasPage("mint") {
+		t.Fatal("mint page missing after a config was added")
+	}
+}
+
 func bumpMtime(t *testing.T, path string, secs int) {
 	t.Helper()
 	ft := time.Now().Add(time.Duration(secs) * time.Second)

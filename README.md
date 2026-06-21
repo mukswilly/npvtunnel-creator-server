@@ -139,6 +139,11 @@ backed-up state directory.
 
 ## Using it
 
+> **Prefer not to type flags?** Run **`creator-server menu`** (or just
+> `creator-server` on a terminal) for a full-screen, menu-driven console —
+> register configs, mint share links, burn tokens, check status, back up, all
+> from one screen. The steps below are the scriptable equivalents.
+
 ### 1. Register your config
 
 You already have a working config **in the app** — the one pointing at your VPN
@@ -378,7 +383,8 @@ Run any with `-h` for full flags.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| (none) | Run the server. | the table above |
+| (none) | Run the server — or, on an interactive terminal, open the console. | the table above |
+| `menu` | **Interactive console** — full-screen menu to register configs, mint links, manage tokens, check status, back up. | `-state-dir` |
 | `init` | Guided first-run setup (state dir, key, TLS choice, next steps). | `-state-dir`, `-domain`, `-tls`, `-acme-email` |
 | `config add` / `config ls` | Register a config (paste the app's export string) / list registered configs. | `-state-dir`, `-config` (the app's export string); or `-config-file` / quick-build flags |
 | `token ls` / `token revoke` | List share-link tokens with status / burn one. | `-state-dir`, `-token` |
