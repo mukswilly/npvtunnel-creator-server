@@ -360,4 +360,3 @@ func TestSameInputsProduceDifferentEnvelopes(t *testing.T) {
 		t.Error("two mint runs produced same configFp")
 	}
 }
-

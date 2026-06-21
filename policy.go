@@ -21,7 +21,7 @@ type attestationDecision struct {
 	// true. Used for the audit log + error detail.
 	rejectReason string
 
-	// ttl is the credential lifetime to use for this issuance. Always
+	// ttl is the config lifetime to use for this issuance. Always
 	// set, regardless of mode. The handler uses this in place of the
 	// previously-hardcoded 1 hour.
 	ttl time.Duration
@@ -38,38 +38,38 @@ type attestationDecision struct {
 	verdict *Verdict
 }
 
-// defaultCredTtl is the credential lifetime used when a config entry
-// doesn't set credTtlSec. The per-config override (resolveCredTtl)
+// defaultConfigTtl is the config lifetime used when a config entry
+// doesn't set configTtlSec. The per-config override (resolveConfigTtl)
 // supersedes it; the soft mode is the only thing that further shortens
 // the resolved baseline.
-const defaultCredTtl = 1 * time.Hour
+const defaultConfigTtl = 1 * time.Hour
 
-// credTtlMin / credTtlMax bound the per-config credTtlSec override,
+// configTtlMin / configTtlMax bound the per-config configTtlSec override,
 // enforced at configs.json load time.
 //
-//   Floor: a credential whose lifetime is shorter than the connect
+//   Floor: a config whose lifetime is shorter than the connect
 //   handshake (clock skew + network latency before the VPN server
 //   validates the HMAC) would expire in flight. 60s leaves margin.
 //
-//   Ceiling: the issuer model exists to mint short-lived, device-bound
-//   credentials. An unbounded TTL quietly reverts it to the static-config
+//   Ceiling: the issuer model exists to hand out short-lived, device-bound
+//   configs. An unbounded TTL quietly reverts it to the static-config
 //   model it replaced, and catches a fat-fingered ms-for-sec value
-//   (e.g. 604800000) before it mints a multi-year credential. 7 days is
+//   (e.g. 604800000) before it hands out a multi-year config. 7 days is
 //   generous for "I don't want recipients re-issuing constantly."
 const (
-	credTtlMin = 60 * time.Second
-	credTtlMax = 7 * 24 * time.Hour
+	configTtlMin = 60 * time.Second
+	configTtlMax = 7 * 24 * time.Hour
 )
 
-// resolveCredTtl picks the baseline credential lifetime for a config
-// entry: the per-entry credTtlSec override, or defaultCredTtl when unset
-// (0). Values are bounds-checked at config load (validateCredTtlSec), so
-// a non-zero CredTtlSec here is already within [credTtlMin, credTtlMax].
-func resolveCredTtl(entry *ConfigEntry) time.Duration {
-	if entry == nil || entry.CredTtlSec <= 0 {
-		return defaultCredTtl
+// resolveConfigTtl picks the baseline config lifetime for a config
+// entry: the per-entry configTtlSec override, or defaultConfigTtl when unset
+// (0). Values are bounds-checked at config load (validateConfigTtlSec), so
+// a non-zero ConfigTtlSec here is already within [configTtlMin, configTtlMax].
+func resolveConfigTtl(entry *ConfigEntry) time.Duration {
+	if entry == nil || entry.ConfigTtlSec <= 0 {
+		return defaultConfigTtl
 	}
-	return time.Duration(entry.CredTtlSec) * time.Second
+	return time.Duration(entry.ConfigTtlSec) * time.Second
 }
 
 // evaluateAttestationPolicy applies the (possibly-nil) policy to the
@@ -95,7 +95,7 @@ func resolveCredTtl(entry *ConfigEntry) time.Duration {
 // against motivated ones; verifier-backed checking
 // supersedes it whenever the policy names a Verifier.
 //
-// baseTtl is the per-config baseline lifetime (resolveCredTtl). Every
+// baseTtl is the per-config baseline lifetime (resolveConfigTtl). Every
 // "full TTL" outcome uses it verbatim; the soft-mode penalty shortens it
 // but never lengthens it.
 func evaluateAttestationPolicy(

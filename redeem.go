@@ -46,7 +46,7 @@ const (
 //     straight into the existing import flow.
 //
 // What this handler is NOT:
-//   - Not signed by the requester. The token is the bearer credential.
+//   - Not signed by the requester. The token is the bearer token.
 //     Anyone with the URL can redeem; the per-token redemption count +
 //     the per-IP rate limit are the only gates.
 //   - Not idempotent. A successful redemption uses up one of the
@@ -159,7 +159,7 @@ func (s *Server) handleRedeem(w http.ResponseWriter, r *http.Request) {
 
 	// Require the operator to have set the public issuer URL —
 	// without it, the minted envelope's IssuerBody.issuerUrl would
-	// be empty and recipients couldn't fetch credentials.
+	// be empty and recipients couldn't fetch configs.
 	if s.state.PublicIssuerURL == "" {
 		writeRedeemError(w, http.StatusInternalServerError, "server_error",
 			"this server is not configured to mint redemptions (PublicIssuerURL not set)")

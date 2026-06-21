@@ -1,8 +1,8 @@
 package main
 
 import (
-	_ "embed"
 	"crypto/x509"
+	_ "embed"
 	"encoding/pem"
 	"fmt"
 )

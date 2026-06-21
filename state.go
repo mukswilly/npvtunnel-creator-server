@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// ConfigEntry is one VPN config a creator's issuer knows how to mint
-// session credentials for. Recipients refer to a config by its
+// ConfigEntry is one VPN config a creator's issuer knows how to hand
+// out. Recipients refer to a config by its
 // `configId` — the 16-byte stable identifier embedded in the envelope
 // header, base64url-no-pad encoded.
 //
@@ -45,7 +45,7 @@ import (
 // # The Config field
 //
 // Config carries a full config-body template — same JSON shape the V1
-// envelope body uses. It already holds the working credential the
+// envelope body uses. It already holds the working config the
 // operator wants recipients to use (e.g. v2rayProfile.password,
 // sshConfig.sshPassword). At /v1/issue time the server base64url-no-pad
 // encodes this config body verbatim into IssueResponse.ConfigB64 — the
@@ -53,9 +53,9 @@ import (
 // normal connect path.
 //
 // The issuer does NOT run or control the VPN data-plane server; it
-// distributes a static, already-working credential for a server run by
+// distributes a static, already-working config for a server run by
 // someone else. The value of the issuer is the attestation / rate-limit
-// gate and the signed receipt, not credential minting.
+// gate and the signed receipt, not config minting.
 //
 // What this buys: every VPN protocol the v2ray / SSH config types
 // support works end-to-end. Adding a new protocol is one configs.json
@@ -75,7 +75,7 @@ type ConfigEntry struct {
 	//     "sshConfig":    { ... } | null }
 	//
 	// Secret fields (v2rayProfile.password, sshConfig.sshPassword, etc.)
-	// hold the already-working credential the recipient's app will use.
+	// hold the already-working config the recipient's app will use.
 	//
 	// Required when this entry is registered for routing — load-time
 	// validation rejects entries with no Config.
@@ -87,27 +87,27 @@ type ConfigEntry struct {
 	// field keeps working unchanged.
 	AttestationPolicy *AttestationPolicy `json:"attestationPolicy,omitempty"`
 
-	// CredTtlSec is the issuance TTL in seconds — the recipient re-fetch
+	// ConfigTtlSec is the issuance TTL in seconds — the recipient re-fetch
 	// cadence carried in IssueResponse.expiresAt. The issuer does not run
 	// the data plane, so this is a recipient refresh interval, not a server-
-	// enforced credential expiry. Lives on the entry (not on
+	// enforced config expiry. Lives on the entry (not on
 	// AttestationPolicy) so a creator running mode "off" can tune it
 	// without configuring an attestation policy.
 	//
-	//   0 / absent : default (defaultCredTtl, 1 hour).
+	//   0 / absent : default (defaultConfigTtl, 1 hour).
 	//   > 0        : that many seconds, bounds-checked at load to
-	//                [credTtlMin, credTtlMax] (60s .. 7d).
+	//                [configTtlMin, configTtlMax] (60s .. 7d).
 	//
 	// The soft-mode attestation penalty can shorten this for unattested
 	// requests but never lengthen it.
-	CredTtlSec int `json:"credTtlSec,omitempty"`
+	ConfigTtlSec int `json:"configTtlSec,omitempty"`
 }
 
 // defaultMaxIssuancesPerHour is the sliding-window rate limit applied
 // when a policy is configured (mode != off) but doesn't override the
 // limit explicitly. Picks a value generous enough that a legitimate
 // recipient on a flaky network reconnecting often won't hit it, tight
-// enough that a malicious recipient pulling fresh creds in a loop will.
+// enough that a malicious recipient pulling fresh configs in a loop will.
 //
 // Sensible upper bound for "how often does a real user reconnect in an
 // hour?": <= 5 in pathological cases (flaky network, app backgrounding,
@@ -155,14 +155,14 @@ type AttestationPolicy struct {
 	// Mode is one of: "off", "observe", "soft", "strict".
 	Mode string `json:"mode"`
 
-	// SoftFailureTtlSec — credential TTL in seconds when the policy is
+	// SoftFailureTtlSec — config TTL in seconds when the policy is
 	// "soft" and the request didn't claim attestation. Ignored under
 	// other modes. Zero means use the default (300 = 5 minutes).
 	SoftFailureTtlSec int `json:"softFailureTtlSec,omitempty"`
 
-	// MaxIssuancesPerHour caps how many credentials one devicePk may
-	// receive in a sliding 1-hour window. Defends against credential-
-	// draining abuse (a compromised recipient pulling many creds in a
+	// MaxIssuancesPerHour caps how many configs one devicePk may
+	// receive in a sliding 1-hour window. Defends against config-
+	// draining abuse (a compromised recipient pulling many configs in a
 	// loop) without requiring per-creator infrastructure.
 	//
 	//   <= 0 : unlimited (no rate limit applied).
@@ -261,7 +261,7 @@ const (
 	AttestationModeSoft    = "soft"
 	AttestationModeStrict  = "strict"
 
-	// defaultSoftFailureTtlSec is the credential lifetime for soft-mode
+	// defaultSoftFailureTtlSec is the config lifetime for soft-mode
 	// requests with no claimed attestation. Short enough to bound damage
 	// if the device turns out to be compromised, long enough that a flaky
 	// network doesn't cause reconnect storms.
@@ -423,7 +423,7 @@ func NewState() *State {
 //     the matching pubkey, so this MUST be stable across restarts — losing
 //     it breaks every existing recipient.
 //   - configs.json — optional list of ConfigEntry records the issuer can
-//     mint session credentials for. If absent, /v1/issue falls back to the
+//     hand out. If absent, /v1/issue falls back to the
 //     stub behavior so the wire-protocol test harness keeps working.
 //
 // Returns the populated *State or an error if the on-disk state is corrupt.
@@ -666,17 +666,17 @@ func loadConfigsFile(path string) (map[string]*ConfigEntry, error) {
 				}
 			}
 		}
-		// Credential TTL override (if set) must land within the supported
+		// Config TTL override (if set) must land within the supported
 		// window. Rejecting at load — rather than silently clamping — means
 		// an operator who fat-fingers the value (e.g. ms instead of s) gets
-		// a clear startup error instead of a surprising credential lifetime.
-		if entry.CredTtlSec != 0 {
-			minSec := int(credTtlMin.Seconds())
-			maxSec := int(credTtlMax.Seconds())
-			if entry.CredTtlSec < minSec || entry.CredTtlSec > maxSec {
+		// a clear startup error instead of a surprising config lifetime.
+		if entry.ConfigTtlSec != 0 {
+			minSec := int(configTtlMin.Seconds())
+			maxSec := int(configTtlMax.Seconds())
+			if entry.ConfigTtlSec < minSec || entry.ConfigTtlSec > maxSec {
 				return nil, fmt.Errorf(
-					"entry %d (configId=%s) credTtlSec = %d: must be 0 (default) or within [%d, %d] seconds",
-					i, entry.ConfigID, entry.CredTtlSec, minSec, maxSec,
+					"entry %d (configId=%s) configTtlSec = %d: must be 0 (default) or within [%d, %d] seconds",
+					i, entry.ConfigID, entry.ConfigTtlSec, minSec, maxSec,
 				)
 			}
 		}
@@ -703,7 +703,7 @@ func loadConfigsFile(path string) (map[string]*ConfigEntry, error) {
 // logical config, they mint a different token (which gets a different
 // configId).
 type RedemptionToken struct {
-	// Token is the bearer credential, base64url-no-pad of 16 random
+	// Token is the bearer token, base64url-no-pad of 16 random
 	// bytes. Appears in the deep-link URL the creator posts publicly.
 	Token string `json:"token"`
 

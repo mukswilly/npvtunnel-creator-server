@@ -582,7 +582,7 @@ func TestIssueRequireTrustedRootRejectsUntrustedRoot(t *testing.T) {
 
 // TestIssueRequireTrustedRootAcceptsTrustedRoot — symmetric positive
 // test: same policy, but the verifier's pool contains the synth root,
-// so the same chain now anchors and the credential issues.
+// so the same chain now anchors and the config issues.
 func TestIssueRequireTrustedRootAcceptsTrustedRoot(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{

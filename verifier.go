@@ -67,7 +67,7 @@ type Verdict struct {
 	// TrustedRoot=true here. A fetch-and-cache revocation gate was built
 	// and then removed (fail-open, lagged real compromise, and useless
 	// against the rooted-recipient threat that extracts inside the
-	// credential TTL) — see aka.go's "What it does NOT verify".
+	// config TTL) — see aka.go's "What it does NOT verify".
 	TrustedRoot bool
 
 	// VerifiedBootState is the bootloader/verified-boot state reported

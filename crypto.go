@@ -102,7 +102,7 @@ func verifyIssueRequestSignature(req *IssueRequest) (bool, error) {
 // produce IssueResponse.ReceiptSig. Must match the receipt signing
 // input the app verifies against, byte-for-byte.
 //
-// Binds the issued credential to (a) the specific device, (b) the specific
+// Binds the issued config to (a) the specific device, (b) the specific
 // request that produced it (via the recipient-chosen requestNonce), and
 // (c) the exact ConfigB64 returned. So a MITM issuer can't swap a
 // different device's config into this response, and the recipient can't

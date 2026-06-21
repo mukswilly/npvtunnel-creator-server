@@ -39,10 +39,10 @@ type IssueRequest struct {
 //
 // The wire shape collapses to a single ConfigBody payload (base64url-no-
 // pad of its JSON), returned verbatim from the routed configs.json entry.
-// The already-working credential lives inside that payload at whichever
+// The already-working config lives inside that payload at whichever
 // slot the operator's config put it — typically v2rayProfile.password or
 // sshConfig.sshPassword. The issuer does not control the data-plane
-// server, so it neither mints nor mutates the credential.
+// server, so it neither mints nor mutates the config.
 type IssueResponse struct {
 	// ConfigB64 is base64url-no-pad of a ConfigBody JSON. The recipient
 	// decodes and parses it through the same path V1 envelope bodies use,
@@ -50,7 +50,7 @@ type IssueResponse struct {
 	ConfigB64 string `json:"configB64"`
 	// ExpiresAt is the RFC3339 UTC timestamp at which the recipient should
 	// re-fetch. Since the issuer doesn't run the data plane this is a
-	// client re-fetch cadence, not a server-side credential expiry.
+	// client re-fetch cadence, not a server-side config expiry.
 	ExpiresAt string `json:"expiresAt"`
 	// ReceiptSig is ECDSA-P256 P1363, base64url-no-pad. Covers
 	// "v1.receipt|" + devicePk + "|" + requestNonce + "|" + expiresAt + "|" + configB64.
@@ -78,11 +78,11 @@ type IssueError struct {
 //
 // The share-link flow: one tap from a public channel to a fully-
 // installed, per-recipient sealed config, with real cryptographic
-// confidentiality and device-bound short-TTL credentials.
+// confidentiality and device-bound short-TTL configs.
 // ──────────────────────────────────────────────────────────────────
 
 // RedeemRequest is the JSON body the recipient POSTs to /v1/redeem.
-// No signature: the token is the bearer credential. RecipientPubkey is
+// No signature: the token is the bearer token. RecipientPubkey is
 // what the envelope ends up sealed to, so an attacker swapping it
 // can't decrypt the result.
 type RedeemRequest struct {

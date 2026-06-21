@@ -25,16 +25,16 @@ func TestPolicyOffIgnoresAttestation(t *testing.T) {
 		{Platform: "NONE", Token: "", Nonce: "n"},
 		{Platform: "ANDROID", Token: "tok", Nonce: "n"},
 	} {
-		d := evaluateAttestationPolicy(nil, att, nil, defaultCredTtl)
+		d := evaluateAttestationPolicy(nil, att, nil, defaultConfigTtl)
 		if d.reject {
 			t.Fatalf("nil policy must not reject: %+v", att)
 		}
-		if d.ttl != defaultCredTtl {
-			t.Fatalf("nil policy must use defaultCredTtl, got %v", d.ttl)
+		if d.ttl != defaultConfigTtl {
+			t.Fatalf("nil policy must use defaultConfigTtl, got %v", d.ttl)
 		}
 	}
-	d := evaluateAttestationPolicy(&AttestationPolicy{Mode: AttestationModeOff}, AttestationBlob{Platform: "NONE"}, nil, defaultCredTtl)
-	if d.reject || d.ttl != defaultCredTtl {
+	d := evaluateAttestationPolicy(&AttestationPolicy{Mode: AttestationModeOff}, AttestationBlob{Platform: "NONE"}, nil, defaultConfigTtl)
+	if d.reject || d.ttl != defaultConfigTtl {
 		t.Fatalf("off mode must be no-op, got %+v", d)
 	}
 }
@@ -45,22 +45,22 @@ func TestPolicyObserveLogsButDoesNotBlock(t *testing.T) {
 		{Platform: "NONE"},
 		{Platform: "ANDROID", Token: "tok"},
 	} {
-		d := evaluateAttestationPolicy(p, att, nil, defaultCredTtl)
+		d := evaluateAttestationPolicy(p, att, nil, defaultConfigTtl)
 		if d.reject {
 			t.Fatalf("observe must not reject: %+v", att)
 		}
 		if !d.logAttestation {
 			t.Fatalf("observe must request logging: %+v", att)
 		}
-		if d.ttl != defaultCredTtl {
-			t.Fatalf("observe must use defaultCredTtl, got %v", d.ttl)
+		if d.ttl != defaultConfigTtl {
+			t.Fatalf("observe must use defaultConfigTtl, got %v", d.ttl)
 		}
 	}
 }
 
 func TestPolicySoftShortensTtlWhenUnattested(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeSoft, SoftFailureTtlSec: 60}
-	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, defaultCredTtl)
+	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, defaultConfigTtl)
 	if d.reject {
 		t.Fatalf("soft must not reject unattested: %+v", d)
 	}
@@ -71,7 +71,7 @@ func TestPolicySoftShortensTtlWhenUnattested(t *testing.T) {
 
 func TestPolicySoftUsesDefaultTtlWhenNotConfigured(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeSoft} // SoftFailureTtlSec unset = 0
-	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, defaultCredTtl)
+	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, defaultConfigTtl)
 	expected := time.Duration(defaultSoftFailureTtlSec) * time.Second
 	if d.ttl != expected {
 		t.Fatalf("soft + unattested + ttl unset: ttl = %v, want %v", d.ttl, expected)
@@ -80,15 +80,15 @@ func TestPolicySoftUsesDefaultTtlWhenNotConfigured(t *testing.T) {
 
 func TestPolicySoftFullTtlWhenAttested(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeSoft, SoftFailureTtlSec: 60}
-	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "ANDROID", Token: "tok"}, nil, defaultCredTtl)
-	if d.ttl != defaultCredTtl {
-		t.Fatalf("soft + attested: ttl = %v, want full %v", d.ttl, defaultCredTtl)
+	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "ANDROID", Token: "tok"}, nil, defaultConfigTtl)
+	if d.ttl != defaultConfigTtl {
+		t.Fatalf("soft + attested: ttl = %v, want full %v", d.ttl, defaultConfigTtl)
 	}
 }
 
 func TestPolicyStrictRejectsUnattested(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeStrict}
-	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, defaultCredTtl)
+	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, defaultConfigTtl)
 	if !d.reject {
 		t.Fatalf("strict must reject unattested: %+v", d)
 	}
@@ -96,11 +96,11 @@ func TestPolicyStrictRejectsUnattested(t *testing.T) {
 
 func TestPolicyStrictAllowsAttested(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeStrict}
-	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "ANDROID", Token: "tok"}, nil, defaultCredTtl)
+	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "ANDROID", Token: "tok"}, nil, defaultConfigTtl)
 	if d.reject {
 		t.Fatalf("strict must allow attested: %+v", d)
 	}
-	if d.ttl != defaultCredTtl {
+	if d.ttl != defaultConfigTtl {
 		t.Fatalf("strict + attested: ttl should be full, got %v", d.ttl)
 	}
 }
@@ -301,25 +301,25 @@ func TestIssueOffModeUsesFullTtlRegardlessOfAttestation(t *testing.T) {
 	expires, _ := time.Parse(time.RFC3339, resp.ExpiresAt)
 
 	gap := expires.Sub(before)
-	// defaultCredTtl is 1 hour.
+	// defaultConfigTtl is 1 hour.
 	if gap < 50*time.Minute || gap > 70*time.Minute {
 		t.Fatalf("expected ~1h TTL with no policy, got %v", gap)
 	}
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Configurable credential TTL (credTtlSec)
+// Configurable config TTL (configTtlSec)
 // ──────────────────────────────────────────────────────────────────
 
-func TestResolveCredTtl(t *testing.T) {
-	if got := resolveCredTtl(nil); got != defaultCredTtl {
-		t.Fatalf("nil entry: got %v, want default %v", got, defaultCredTtl)
+func TestResolveConfigTtl(t *testing.T) {
+	if got := resolveConfigTtl(nil); got != defaultConfigTtl {
+		t.Fatalf("nil entry: got %v, want default %v", got, defaultConfigTtl)
 	}
-	if got := resolveCredTtl(&ConfigEntry{}); got != defaultCredTtl {
-		t.Fatalf("CredTtlSec unset: got %v, want default %v", got, defaultCredTtl)
+	if got := resolveConfigTtl(&ConfigEntry{}); got != defaultConfigTtl {
+		t.Fatalf("ConfigTtlSec unset: got %v, want default %v", got, defaultConfigTtl)
 	}
-	if got := resolveCredTtl(&ConfigEntry{CredTtlSec: 7200}); got != 2*time.Hour {
-		t.Fatalf("CredTtlSec=7200: got %v, want 2h", got)
+	if got := resolveConfigTtl(&ConfigEntry{ConfigTtlSec: 7200}); got != 2*time.Hour {
+		t.Fatalf("ConfigTtlSec=7200: got %v, want 2h", got)
 	}
 }
 
@@ -362,58 +362,58 @@ func TestPolicySoftFailureCappedAtBaseTtl(t *testing.T) {
 	}
 }
 
-func TestConfigsFileRejectsCredTtlBelowFloor(t *testing.T) {
-	assertCredTtlLoadError(t, 30) // floor is 60
+func TestConfigsFileRejectsConfigTtlBelowFloor(t *testing.T) {
+	assertConfigTtlLoadError(t, 30) // floor is 60
 }
 
-func TestConfigsFileRejectsCredTtlAboveCeiling(t *testing.T) {
-	assertCredTtlLoadError(t, int(credTtlMax.Seconds())+1)
+func TestConfigsFileRejectsConfigTtlAboveCeiling(t *testing.T) {
+	assertConfigTtlLoadError(t, int(configTtlMax.Seconds())+1)
 }
 
-func TestConfigsFileRejectsNegativeCredTtl(t *testing.T) {
-	assertCredTtlLoadError(t, -1)
+func TestConfigsFileRejectsNegativeConfigTtl(t *testing.T) {
+	assertConfigTtlLoadError(t, -1)
 }
 
-func TestConfigsFileAcceptsValidCredTtl(t *testing.T) {
+func TestConfigsFileAcceptsValidConfigTtl(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
 		"config": {"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}},
-		"credTtlSec": 7200
+		"configTtlSec": 7200
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(raw), 0o600)
 	if _, err := NewStateWithDir(dir); err != nil {
-		t.Fatalf("valid credTtlSec=7200 should load: %v", err)
+		t.Fatalf("valid configTtlSec=7200 should load: %v", err)
 	}
 }
 
-// assertCredTtlLoadError writes a configs.json with the given credTtlSec
-// and asserts NewStateWithDir refuses it with a credTtlSec-naming error.
-func assertCredTtlLoadError(t *testing.T, sec int) {
+// assertConfigTtlLoadError writes a configs.json with the given configTtlSec
+// and asserts NewStateWithDir refuses it with a configTtlSec-naming error.
+func assertConfigTtlLoadError(t *testing.T, sec int) {
 	t.Helper()
 	dir := t.TempDir()
 	raw := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
 		"config": {"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}},
-		"credTtlSec": ` + strconv.Itoa(sec) + `
+		"configTtlSec": ` + strconv.Itoa(sec) + `
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(raw), 0o600)
 	_, err := NewStateWithDir(dir)
 	if err == nil {
-		t.Fatalf("expected load failure on credTtlSec=%d", sec)
+		t.Fatalf("expected load failure on configTtlSec=%d", sec)
 	}
-	if !strings.Contains(err.Error(), "credTtlSec") {
-		t.Fatalf("expected credTtlSec message, got: %v", err)
+	if !strings.Contains(err.Error(), "configTtlSec") {
+		t.Fatalf("expected configTtlSec message, got: %v", err)
 	}
 }
 
-// End-to-end: a configured credTtlSec drives the issued expiresAt.
-func TestIssueHonorsConfiguredCredTtl(t *testing.T) {
+// End-to-end: a configured configTtlSec drives the issued expiresAt.
+func TestIssueHonorsConfiguredConfigTtl(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}},
-		"credTtlSec": 7200
+		"configTtlSec": 7200
 	}]`
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
@@ -439,8 +439,8 @@ func TestIssueHonorsConfiguredCredTtl(t *testing.T) {
 	}
 
 	gap := expires.Sub(before)
-	// credTtlSec=7200 → ~2h, allowing slack for request processing.
+	// configTtlSec=7200 → ~2h, allowing slack for request processing.
 	if gap < 110*time.Minute || gap > 130*time.Minute {
-		t.Fatalf("expected ~2h TTL from credTtlSec=7200, got %v", gap)
+		t.Fatalf("expected ~2h TTL from configTtlSec=7200, got %v", gap)
 	}
 }

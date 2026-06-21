@@ -315,7 +315,7 @@ func runConfigAdd(args []string) int {
 	address := fs.String("address", "", "[advanced] V2RAY quick-build: server address host:port")
 	server := fs.String("server", "", "[advanced] V2RAY quick-build: server host")
 	port := fs.String("port", "", "[advanced] V2RAY quick-build: server port")
-	password := fs.String("password", "", "[advanced] V2RAY quick-build: credential your VPN server accepts")
+	password := fs.String("password", "", "[advanced] V2RAY quick-build: the value inside your config your VPN server accepts (advanced)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

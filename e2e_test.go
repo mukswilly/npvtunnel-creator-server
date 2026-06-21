@@ -151,7 +151,7 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 	}
 
 	// And the issued ConfigBody decodes + carries the operator's static
-	// credential verbatim. (Here we're confirming the *path through
+	// config verbatim. (Here we're confirming the *path through
 	// /v1/redeem* still arrives at the routed configs.json entry.)
 	var resp IssueResponse
 	if err := json.Unmarshal(issueRespBytes, &resp); err != nil {
@@ -167,6 +167,6 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 	}
 	profile, _ := cfg["v2rayProfile"].(map[string]any)
 	if profile["password"] != "a1b2c3d4-0000-4000-8000-000000000001" {
-		t.Fatalf("issued config did not carry the static credential verbatim, got: %v", profile["password"])
+		t.Fatalf("issued config did not carry the static config verbatim, got: %v", profile["password"])
 	}
 }

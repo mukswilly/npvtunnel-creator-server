@@ -44,7 +44,7 @@ func hashDevicePk(salt []byte, devicePkB64 string) string {
 //   policyMode      — "off"/"observe"/"soft"/"strict" or "" if no policy.
 //   claimedPlatform — req.Attestation.Platform.
 //   tokenPresent    — req.Attestation.Token != "".
-//   ttlSec          — credential TTL in seconds (0 if rejected).
+//   ttlSec          — config TTL in seconds (0 if rejected).
 //   extras          — optional event-specific fields. Passed through verbatim;
 //                     callers should NOT include raw devicePks or IPs here.
 //
@@ -52,7 +52,7 @@ func hashDevicePk(salt []byte, devicePkB64 string) string {
 //   - The raw devicePk string. Hashed via hashDevicePk before emit.
 //   - The client's IP address. The HTTP layer has it but we don't pass it
 //     down; opt-in mechanism deferred if needed.
-//   - Session credentials, request signatures, attestation tokens — anything
+//   - Session configs, request signatures, attestation tokens — anything
 //     that's a secret or could be replayed.
 func auditEmit(
 	logger *slog.Logger,

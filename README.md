@@ -49,7 +49,7 @@ sits beside them and only handles *distributing the config that points at them*:
    └────────┬─────────┘
             │  each time the user's app connects, it asks this server for the
             └─ config, which you authored in configs.json and which already
-               carries the working credential your VPN server accepts.
+               carries the working secrets your VPN server accepts.
 ```
 
 So:
@@ -58,7 +58,7 @@ So:
 - **The real config is fetched from this server**, gated by your attestation /
   rate-limit policy, with a signed receipt the app verifies before using it.
 - **This server does not run or control your VPN server.** It distributes a
-  static, already-working credential you placed in `configs.json` for a data
+  static, already-working config you placed in `configs.json` for a data
   plane run by you (or whoever runs it). The `expiresAt` it returns is a
   client *re-fetch cadence*, not a server-enforced expiry.
 
@@ -175,12 +175,12 @@ creator-server config ls -state-dir /var/lib/creator-server
 ```
 
 The server returns this config **verbatim** to recipients — it never mints,
-derives, or rewrites the credential inside it. Because the app produces the
+derives, or rewrites the secrets inside it. Because the app produces the
 string, you never touch the config's field layout.
 
 > **Advanced.** `config add` also accepts raw config JSON (`-config '{…}'` or
 > `-config-file f.json`) and can build a v2ray entry from flags
-> (`-server -port -address -password`). A per-entry `credTtlSec` (60s–7d,
+> (`-server -port -address -password`). A per-entry `configTtlSec` (60s–7d,
 > default 1h) sets the app's re-fetch cadence.
 
 ### 2. Hand out the config
@@ -336,15 +336,15 @@ attestation tokens, no IPs, no secrets** — device IDs are salted-hashed
 
 This server doesn't run your tunnel and has no access to your data plane. It
 hands out the static config you wrote in `configs.json`, **verbatim**, including
-whatever credential your VPN server already accepts (a VLESS UUID, an SSH
-password, etc.). Provisioning that credential on your v2ray/SSH server, and
+whatever secret your VPN server already accepts (a VLESS UUID, an SSH
+password, etc.). Provisioning that secret on your v2ray/SSH server, and
 rotating it when you need to, is your job and is intentionally out of scope here.
 
 What this server adds on top of just posting the config publicly: the handout is
 gated by your attestation / rate-limit policy, and every response carries a
 receipt signed by `creator-key.pem` that the app verifies before using the
-config. To bound the blast radius of a leak, keep credentials cheap to rotate on
-your data plane and use short `credTtlSec` re-fetch cadences so recipients pick
+config. To bound the blast radius of a leak, keep your data-plane secrets cheap
+to rotate and use short `configTtlSec` re-fetch cadences so recipients pick
 up a rotation quickly.
 
 The server is a single instance; rate-limit counters are in-memory and

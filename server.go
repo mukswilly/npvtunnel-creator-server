@@ -25,7 +25,7 @@ type Server struct {
 
 // maxInFlightRequests caps concurrently-served requests. Generous for a
 // single small VPS serving one creator's audience (issue calls are cached
-// client-side to roughly once per credential TTL), tight enough that a
+// client-side to roughly once per config TTL), tight enough that a
 // flood can't exhaust goroutines or file descriptors. /healthz bypasses
 // the limit so a liveness probe still succeeds while the server sheds load.
 const maxInFlightRequests = 256
@@ -154,10 +154,10 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	// registry.
 	var configJson json.RawMessage
 	var attestationPolicy *AttestationPolicy
-	// Baseline credential lifetime. Per-config override from the entry
-	// (resolveCredTtl) when a registry is loaded; defaultCredTtl in the
+	// Baseline config lifetime. Per-config override from the entry
+	// (resolveConfigTtl) when a registry is loaded; defaultConfigTtl in the
 	// no-registry stub path below.
-	baseTtl := defaultCredTtl
+	baseTtl := defaultConfigTtl
 	if s.state.HasConfigRegistry() {
 		entry := s.state.ConfigByID(req.ConfigID)
 		if entry == nil {
@@ -167,10 +167,10 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		attestationPolicy = entry.AttestationPolicy
 		configJson = entry.Config
-		baseTtl = resolveCredTtl(entry)
+		baseTtl = resolveConfigTtl(entry)
 	} else {
 		// Stub ConfigBody for ephemeral / no-registry mode. Carries no
-		// credential — the wire-protocol harness checks shape + signing,
+		// config secret — the wire-protocol harness checks shape + signing,
 		// not the contents.
 		configJson = json.RawMessage(
 			`{"name":"stub","address":"stub.creator-server.example:443","type":"V2RAY","v2rayProfile":{"server":"stub.creator-server.example","serverPort":"443"}}`)
@@ -283,15 +283,15 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// TTL comes from the attestation-policy decision: the per-config
-	// baseline (resolveCredTtl) in most modes; shorter under "soft" +
+	// baseline (resolveConfigTtl) in most modes; shorter under "soft" +
 	// unattested. Since the issuer doesn't run the data plane, this is a
 	// recipient re-fetch cadence carried in expiresAt, not a server-side
-	// credential expiry.
+	// config expiry.
 	expiresAt := time.Now().UTC().Add(decision.ttl).Format(time.RFC3339)
 
 	// The routed entry's ConfigBody already holds the operator's static,
-	// already-working credential. Return it verbatim — no per-request
-	// credential derivation or substitution.
+	// already-working config. Return it verbatim — no per-request
+	// config derivation or substitution.
 	resp := IssueResponse{
 		ConfigB64: b64url.EncodeToString(configJson),
 		ExpiresAt: expiresAt,

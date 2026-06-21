@@ -35,7 +35,7 @@ import (
 //     the feed was unreachable — and a censored-region issuer often
 //     can't reach Google at all), it lagged real compromise by weeks,
 //     and it bought nothing against the primary threat (a rooted
-//     recipient extracts the config inside the ~1h credential window,
+//     recipient extracts the config inside the ~1h config window,
 //     long before any feed could flag the key). Not worth the standing
 //     network dependency + cache machinery.
 
@@ -295,10 +295,10 @@ const (
 // 0 (= Verified)" so the policy layer can refuse hand-wave-trust an
 // attestation that didn't carry the gate-relevant bits at all.
 type akaParsed struct {
-	securityLevel       int
-	rootOfTrustPresent  bool
-	verifiedBootState   int
-	deviceLocked        bool
+	securityLevel      int
+	rootOfTrustPresent bool
+	verifiedBootState  int
+	deviceLocked       bool
 }
 
 // parseKeyDescription decodes the full KeyDescription SEQUENCE, then

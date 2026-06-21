@@ -165,7 +165,7 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 		t.Fatalf("fp-A sni = %v", profileA["sni"])
 	}
 	if profileA["password"] != "a1b2c3d4-0000-4000-8000-000000000001" {
-		t.Fatalf("fp-A credential not returned verbatim, got %v", profileA["password"])
+		t.Fatalf("fp-A config not returned verbatim, got %v", profileA["password"])
 	}
 
 	// fp-B: SSH routing — completely different protocol, same code path.
@@ -180,13 +180,13 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 		t.Fatalf("fp-B sshHost = %v", sshB["sshHost"])
 	}
 	if sshB["sshPassword"] != "static-ssh-password-xyz" {
-		t.Fatalf("fp-B credential not returned verbatim, got %v", sshB["sshPassword"])
+		t.Fatalf("fp-B config not returned verbatim, got %v", sshB["sshPassword"])
 	}
 }
 
 // TestConfigsFileUnknownFpReturns404 confirms that a recipient asking for
 // a fp the issuer doesn't know about gets a clean error rather than the
-// stub credential.
+// stub config.
 func TestConfigsFileUnknownFpReturns404(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{

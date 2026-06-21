@@ -30,17 +30,17 @@ import (
 // ─── Wire constants (fixed by the .npvs format) ──
 
 const (
-	envelopeMagicLen      = 4
-	envelopeVersion       = 1
-	envelopeVersionLen    = 1
-	envelopeHeaderLenLen  = 4
-	envelopeBodyNonceLen  = 12
-	envelopeBodyLenLen    = 4
-	envelopeSignatureLen  = 64 // ECDSA P-256 IEEE P1363
-	envelopeDEKLen        = 32 // ChaCha20-Poly1305 key
-	envelopeConfigIDLen   = 16
-	envelopeWrapLen       = 93 // eph_pk(33)+nonce(12)+ct(32)+tag(16)
-	envelopeP256CompLen   = 33 // SEC 1 compressed P-256 pubkey
+	envelopeMagicLen     = 4
+	envelopeVersion      = 1
+	envelopeVersionLen   = 1
+	envelopeHeaderLenLen = 4
+	envelopeBodyNonceLen = 12
+	envelopeBodyLenLen   = 4
+	envelopeSignatureLen = 64 // ECDSA P-256 IEEE P1363
+	envelopeDEKLen       = 32 // ChaCha20-Poly1305 key
+	envelopeConfigIDLen  = 16
+	envelopeWrapLen      = 93 // eph_pk(33)+nonce(12)+ct(32)+tag(16)
+	envelopeP256CompLen  = 33 // SEC 1 compressed P-256 pubkey
 )
 
 var envelopeMagic = []byte{0x4E, 0x50, 0x56, 0x53} // "NPVS"
@@ -50,11 +50,11 @@ var envelopeWrapInfoLabel = []byte("NPVS-v1-wrap")
 // ─── Header schema (.npvs wire format) ──────────────────────────
 
 type envelopeHeader struct {
-	V          int               `json:"v"`
-	ConfigID   string            `json:"configId"`
-	IssuedAt   string            `json:"issuedAt"`
-	Creator    envelopeCreatorRef `json:"creator"`
-	Policy     envelopePolicy    `json:"policy"`
+	V          int                 `json:"v"`
+	ConfigID   string              `json:"configId"`
+	IssuedAt   string              `json:"issuedAt"`
+	Creator    envelopeCreatorRef  `json:"creator"`
+	Policy     envelopePolicy      `json:"policy"`
 	Recipients []envelopeRecipient `json:"recipients"`
 }
 
