@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
@@ -302,14 +303,19 @@ func runConfigAdd(args []string) int {
 	fs := flag.NewFlagSet("config add", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	stateDir := fs.String("state-dir", "", "state directory (required)")
+	configStr := fs.String("config", "",
+		"the config string your app exported (Export -> \"Copy for creator-server\"). "+
+			"Either the base64url config string or the raw config JSON. You do NOT "+
+			"hand-write the app's config format — the app produces this for you.")
 	configFile := fs.String("config-file", "",
-		"path to a JSON file holding the full config body (full control; "+
-			"overrides the -name/-address/... quick-build flags)")
-	name := fs.String("name", "", "display name (V2RAY quick-build)")
-	address := fs.String("address", "", "server address host:port (V2RAY quick-build)")
-	server := fs.String("server", "", "v2ray server host (V2RAY quick-build)")
-	port := fs.String("port", "", "v2ray server port (V2RAY quick-build)")
-	password := fs.String("password", "", "the already-working credential your VPN server accepts")
+		"read the config string / JSON from a file instead of -config")
+	// Advanced escape hatch for operators who know the wire shape and want
+	// to build a V2RAY config by hand instead of pasting the app's export.
+	name := fs.String("name", "", "[advanced] V2RAY quick-build: display name")
+	address := fs.String("address", "", "[advanced] V2RAY quick-build: server address host:port")
+	server := fs.String("server", "", "[advanced] V2RAY quick-build: server host")
+	port := fs.String("port", "", "[advanced] V2RAY quick-build: server port")
+	password := fs.String("password", "", "[advanced] V2RAY quick-build: credential your VPN server accepts")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -318,48 +324,39 @@ func runConfigAdd(args []string) int {
 		return 2
 	}
 
-	var body json.RawMessage
-	switch {
-	case *configFile != "":
+	// Resolve the pasted config string from -config, -config-file, or an
+	// interactive paste.
+	raw := strings.TrimSpace(*configStr)
+	if raw == "" && *configFile != "" {
 		data, err := os.ReadFile(*configFile)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "config add: read -config-file:", err)
 			return 1
 		}
-		var probe map[string]any
-		if err := json.Unmarshal(data, &probe); err != nil {
-			fmt.Fprintln(os.Stderr, "config add: -config-file is not a JSON object:", err)
+		raw = strings.TrimSpace(string(data))
+	}
+	usingQuickBuild := *server != "" || *port != "" || *address != ""
+	if raw == "" && !usingQuickBuild && stdinIsTTY() {
+		r := bufio.NewReader(os.Stdin)
+		fmt.Fprintln(os.Stderr,
+			"Paste the config string from your app (Export -> \"Copy for creator-server\").")
+		raw = strings.TrimSpace(promptLine(r, "config string", ""))
+	}
+
+	var body json.RawMessage
+	switch {
+	case raw != "":
+		decoded, err := decodeConfigString(raw)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "config add:", err)
 			return 1
 		}
-		body = json.RawMessage(data)
-	default:
-		// V2RAY quick-build. Prompt for essentials when interactive.
-		if stdinIsTTY() {
-			r := bufio.NewReader(os.Stdin)
-			if *name == "" {
-				*name = promptLine(r, "Display name", "VPN config")
-			}
-			if *server == "" {
-				*server = promptLine(r, "VPN server host", "")
-			}
-			if *port == "" {
-				*port = promptLine(r, "VPN server port", "443")
-			}
-			if *address == "" {
-				def := ""
-				if *server != "" {
-					def = *server + ":" + *port
-				}
-				*address = promptLine(r, "Address (host:port)", def)
-			}
-			if *password == "" {
-				*password = promptLine(r, "Credential (e.g. VLESS UUID / password)", "")
-			}
-		}
+		body = decoded
+	case usingQuickBuild:
 		if *server == "" || *port == "" || *address == "" {
 			fmt.Fprintln(os.Stderr,
-				"config add: need -server, -port and -address for the V2RAY quick-build "+
-					"(or pass -config-file for full control)")
+				"config add: the quick-build needs -server, -port and -address "+
+					"(or just paste the app's config string with -config)")
 			return 2
 		}
 		v2 := map[string]any{
@@ -374,6 +371,11 @@ func runConfigAdd(args []string) int {
 		}
 		b, _ := json.Marshal(v2)
 		body = b
+	default:
+		fmt.Fprintln(os.Stderr,
+			"config add: paste the config string from your app with -config <string> "+
+				"(or -config-file). Advanced: build a V2RAY config from -server/-port/-address.")
+		return 2
 	}
 
 	// Fresh 16-byte configId (the routing key the envelope embeds).
@@ -404,6 +406,42 @@ func runConfigAdd(args []string) int {
 			"      -redemption-url https://<host>/v1/redeem -redemptions 100\n",
 		configID, len(list), *stateDir, configID)
 	return 0
+}
+
+// decodeConfigString turns the string a creator pasted — the config their
+// app exported, either base64url of the config body or the raw config JSON
+// — into the config-body JSON the issuer stores and returns verbatim. The
+// creator never has to know the config's field layout; the app produced it.
+func decodeConfigString(s string) (json.RawMessage, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, fmt.Errorf("empty config string")
+	}
+	var candidate []byte
+	if strings.HasPrefix(s, "{") {
+		candidate = []byte(s) // already raw JSON
+	} else {
+		dec, err := b64url.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("config string is neither JSON (starts with '{') nor base64url: %w", err)
+		}
+		candidate = dec
+	}
+	// Must be a non-empty JSON object. Decode values as RawMessage so nested
+	// numbers/strings aren't reformatted or lose precision.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(candidate, &probe); err != nil {
+		return nil, fmt.Errorf("config string did not decode to a JSON object: %w", err)
+	}
+	if len(probe) == 0 {
+		return nil, fmt.Errorf("config decoded to an empty object")
+	}
+	// Compact (preserves exact tokens) for stable on-disk storage.
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, candidate); err != nil {
+		return nil, fmt.Errorf("compact config JSON: %w", err)
+	}
+	return json.RawMessage(buf.Bytes()), nil
 }
 
 // ─── token ls / revoke ────────────────────────────────────────────────

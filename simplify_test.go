@@ -134,6 +134,39 @@ func TestTokenStatus(t *testing.T) {
 	}
 }
 
+// TestDecodeConfigString covers `config add` accepting the app's exported
+// config string — base64url of the config body OR raw JSON — without the
+// creator hand-writing the format.
+func TestDecodeConfigString(t *testing.T) {
+	bodyJSON := `{"name":"x","address":"h:443","type":"V2RAY","v2rayProfile":{"server":"h","serverPort":"443","password":"npvs1:AAAA"}}`
+	b64 := b64url.EncodeToString([]byte(bodyJSON)) // the app's export form
+
+	for _, in := range []string{b64, bodyJSON, "  " + b64 + "  "} {
+		got, err := decodeConfigString(in)
+		if err != nil {
+			t.Fatalf("decodeConfigString(%.16q...): %v", in, err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(got, &m); err != nil {
+			t.Fatalf("result is not a JSON object: %v", err)
+		}
+		if m["type"] != "V2RAY" {
+			t.Fatalf("type = %v, want V2RAY", m["type"])
+		}
+	}
+
+	for _, bad := range []string{
+		"",                // empty
+		"not base64 %%%%", // not JSON, not base64
+		"[1,2,3]",         // JSON but not an object
+		"e30",             // base64url of "{}" — empty object
+	} {
+		if _, err := decodeConfigString(bad); err == nil {
+			t.Errorf("decodeConfigString(%q): expected error, got nil", bad)
+		}
+	}
+}
+
 func bumpMtime(t *testing.T, path string, secs int) {
 	t.Helper()
 	ft := time.Now().Add(time.Duration(secs) * time.Second)

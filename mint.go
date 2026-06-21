@@ -43,6 +43,10 @@ func runMintSubcommand(args []string) int {
 			"Combined with -recipient-pubkey flags if both supplied.")
 	issuerURL := fs.String("issuer-url", "",
 		"HTTPS URL of this server's /v1/issue endpoint (required)")
+	configIDFlag := fs.String("config-id", "",
+		"base64url-no-pad configId from `config add` (16 bytes). The minted "+
+			"envelope embeds it so recipients route /v1/issue to the right "+
+			"config. Omit to generate a fresh one (then register a config for it).")
 	expiresAtStr := fs.String("expires-at", "",
 		"optional ISO-8601 envelope expiry (e.g. 2027-01-01T00:00:00Z)")
 	displayMessage := fs.String("display-message", "",
@@ -164,10 +168,23 @@ func runMintSubcommand(args []string) int {
 		}
 	}
 
+	// Optional fixed configId (from `config add`) so the direct-mint path
+	// and the registered config line up. Absent → minter generates one.
+	var configIDBytes []byte
+	if *configIDFlag != "" {
+		decoded, derr := b64url.DecodeString(*configIDFlag)
+		if derr != nil || len(decoded) != envelopeConfigIDLen {
+			fmt.Fprintf(os.Stderr, "mint: -config-id must be base64url-no-pad of %d bytes\n", envelopeConfigIDLen)
+			return 2
+		}
+		configIDBytes = decoded
+	}
+
 	res, err := mintIssuerEnvelope(mintInput{
 		CreatorKey:       creatorKey,
 		RecipientPubKeys: pubkeys,
 		IssuerURL:        *issuerURL,
+		ConfigID:         configIDBytes,
 		Policy:           &pol,
 	})
 	if err != nil {

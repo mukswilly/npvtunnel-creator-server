@@ -139,60 +139,45 @@ backed-up state directory.
 
 ## Using it
 
-### 1. Write your config
+### 1. Register your config
 
-Configs live in `<state-dir>/configs.json`. Each entry pairs a stable 16-byte
-`configId` with the config you want to hand out — pointing at **your** VPN
-server. Put the **already-working credential** your VPN server accepts straight
-into the config. The server returns this config **verbatim** to gated
-recipients; it does not mint, derive, or rewrite the credential.
+You already have a working config **in the app** — the one pointing at your VPN
+server. You don't re-type it here in any special format: the app hands you the
+config as a string, and you paste it in.
 
-```json
-[
-  {
-    "configId": "base64url-no-pad of 16 random bytes",
-    "config": {
-      "name": "Example config",
-      "address": "vpn.yourdomain.example:443",
-      "type": "V2RAY",
-      "v2rayProfile": {
-        "server": "vpn.yourdomain.example",
-        "serverPort": "443",
-        "password": "a1b2c3d4-0000-4000-8000-000000000001"
-      }
-    }
-  }
-]
+1. In the app, open the config you want to distribute and choose
+   **Export → "Copy for creator-server"** — it copies one config string.
+2. Register it (paste the string):
+   ```sh
+   creator-server config add -state-dir /var/lib/creator-server -config "<paste>"
+   ```
+   On a terminal you can run `config add` with no `-config` and it prompts you
+   to paste. It prints a **`configId`** — the handle you hand out in step 2 —
+   and appends the entry to `<state-dir>/configs.json`, which the running server
+   **hot-reloads** (no restart).
+
+See what's registered any time:
+
+```sh
+creator-server config ls -state-dir /var/lib/creator-server
 ```
 
-- **`config`** is a complete **v2ray** or **SSH** config — the only two protocols
-  NpvTunnel supports. `config.type` (`V2RAY` or `SSH`) picks which; everything
-  else (server address, port, transport settings) is just that protocol's normal
-  fields. The credential goes in the slot your server checks —
-  `v2rayProfile.password` above (a UUID for VLESS/VMess), or
-  `sshConfig.sshPassword` for an SSH config.
-- **`credTtlSec`** *(optional)*: how long before the app should re-fetch the
-  config, in seconds — carried back as `expiresAt`. Omit (or `0`) for the
-  default of **3600** (1 hour). Must be between **60** and **604800** (7 days).
-  Because this server doesn't run your data plane, this is a client re-fetch
-  cadence, not a server-enforced credential expiry. Independent of
-  `attestationPolicy` — set it even in the default `off` mode. (Under `soft`
-  mode, an unattested device re-fetches at the shorter of this and
-  `softFailureTtlSec`.)
-- `configs.json` is **hot-reloaded** when you edit it — no restart needed. A
-  malformed edit is rejected and the last-good registry stays live (logged).
-  `creator-server config add` appends entries for you.
+The server returns this config **verbatim** to recipients — it never mints,
+derives, or rewrites the credential inside it. Because the app produces the
+string, you never touch the config's field layout.
 
-`creator-server mint` (below) prints a fresh `configId` and a ready-to-paste
-`configs.json` entry, so you don't have to hand-build one.
+> **Advanced.** `config add` also accepts raw config JSON (`-config '{…}'` or
+> `-config-file f.json`) and can build a v2ray entry from flags
+> (`-server -port -address -password`). A per-entry `credTtlSec` (60s–7d,
+> default 1h) sets the app's re-fetch cadence.
 
 ### 2. Hand out the config
 
 Both ways below give the recipient a *pointer*, not the config. Pick by how you
 reach your audience:
 
-**A. Share link — public channel / many people.** Mint a token for a registered
-`configId` and post the link:
+**A. Share link — public channel / many people.** Mint a token for the
+`configId` from step 1 and post the link:
 
 ```sh
 creator-server mint-share-link \
@@ -204,24 +189,25 @@ creator-server mint-share-link \
 
 It prints a `npvtunnel://join?u=…&t=…` link. Post it; recipients tap once and
 their app sets itself up. (`-label "telegram-main"` tags redemptions in your
-audit log so you can tell which channel a leak came from.)
+audit log so you can tell which channel a leak came from.) Review live tokens
+with `creator-server token ls -state-dir /var/lib/creator-server`.
 
 **B. Direct — when you already have someone's device pubkey.** They copy their
-device's public key from the app and send it to you:
+device's public key from the app and send it to you. Mint a `.npvs` pointer for
+the same `configId`:
 
 ```sh
 creator-server mint \
   -state-dir /var/lib/creator-server \
+  -config-id <configId> \
   -recipient-pubkey <theirDevicePubkey-base64url> \
   -issuer-url https://issuer.yourdomain.example/v1/issue \
   -out recipient.npvs
 ```
 
-For several people, repeat `-recipient-pubkey` or give it a comma-separated
-list (`-recipient-pubkey A,B,C`) — or pass `-recipient-pubkeys-file` with one
-pubkey per line. It prints the `configId` and a `configs.json` template;
-register that entry, then send each person the `.npvs` file (any channel — it
-has no config in it).
+For several people, repeat `-recipient-pubkey` or give a comma-separated list
+(`-recipient-pubkey A,B,C`), or pass `-recipient-pubkeys-file`. Send each person
+the `.npvs` file (any channel — it carries no config, just the pointer).
 
 ### 3. Burn a leaked share link
 
@@ -394,11 +380,11 @@ Run any with `-h` for full flags.
 |---|---|---|
 | (none) | Run the server. | the table above |
 | `init` | Guided first-run setup (state dir, key, TLS choice, next steps). | `-state-dir`, `-domain`, `-tls`, `-acme-email` |
-| `config add` / `config ls` | Register a config / list registered configs. | `-state-dir`; (`-name -server -port -password -address`) or `-config-file` |
+| `config add` / `config ls` | Register a config (paste the app's export string) / list registered configs. | `-state-dir`, `-config` (the app's export string); or `-config-file` / quick-build flags |
 | `token ls` / `token revoke` | List share-link tokens with status / burn one. | `-state-dir`, `-token` |
 | `status` | Snapshot: creator pubkey, #configs, #live tokens. | `-state-dir` |
 | `backup` | Bundle the state dir (key + salt + configs + tokens) into one `.tar.gz`. | `-state-dir`, `-out` |
-| `mint` | Make a discovery pointer (`.npvs`) for known recipient pubkey(s). | `-state-dir`, `-recipient-pubkey` (repeatable / comma-list) / `-recipient-pubkeys-file`, `-issuer-url`, `-out` |
+| `mint` | Make a discovery pointer (`.npvs`) for known recipient pubkey(s). | `-state-dir`, `-config-id`, `-recipient-pubkey` (repeatable / comma-list) / `-recipient-pubkeys-file`, `-issuer-url`, `-out` |
 | `mint-share-link` | Make a `npvtunnel://join` link + redemption token. | `-state-dir`, `-config-id`, `-redemption-url`, `-redemptions`, `-expires-in`, `-label` |
 | `revoke-token` | Burn a leaked share-link token. | `-state-dir`, `-token` |
 | `version` | Print build version. | — |
