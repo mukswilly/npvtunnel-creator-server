@@ -1,0 +1,38 @@
+# systemd unit for npvtunnel-creator-server.
+# Installed automatically by install.sh; committed here for reference and for
+# manual installs. Binds to localhost — terminate TLS with a reverse proxy
+# (Caddy/nginx) in front, as described in the README.
+#
+# EDIT the ExecStart -public-issuer-url to your own domain before enabling.
+
+[Unit]
+Description=NpvTunnel creator-server (issuer + share-link redemption)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=creator
+Group=creator
+ExecStart=/usr/local/bin/creator-server \
+  -addr 127.0.0.1:8443 \
+  -state-dir /var/lib/creator-server \
+  -public-issuer-url https://CHANGE_ME.example/v1/issue
+Restart=on-failure
+RestartSec=2
+
+# Hardening — the process only needs to read/write its state dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/var/lib/creator-server
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

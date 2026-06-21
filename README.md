@@ -1,0 +1,431 @@
+# creator-server
+
+**A small config-distribution server for NpvTunnel's share-link method.**
+
+NpvTunnel users connect to VPN servers — v2ray and SSH — that
+creators run themselves. **This is not one of those.** This is a little
+optional helper that does just one thing: it's one of the ways a creator hands
+a config to their users — the **share-link** way.
+
+You run it (on a cheap VPS) only if you want users to get your config by
+**tapping a link** instead of you sending them a config file. When someone taps
+your link, this server gives their app the config — so the config never sits
+inside the file or link you posted publicly. Each handout is gated (attestation
+and rate limits, both optional) and carries a signed receipt the app verifies.
+
+> **Don't want to run anything?** You don't have to. NpvTunnel also exports
+> configs as plain files — including passphrase-protected ones — with no server
+> at all. This repo is only for creators who specifically want the share-link
+> distribution method.
+
+The server holds no VPN technique of its own — the config you serve is whatever
+*you* put in its config file, pointing at *your* VPN servers. It's open source
+so anyone can verify exactly what it does.
+
+---
+
+## Who this is for
+
+- **Creators** who want to distribute a config by share link, control who can
+  use it (redemption limits + burnable links), and keep a leaked config
+  short-lived. **Most of this README is for you.** You need a VPS and a domain,
+  not Go experience.
+- **Auditors / the curious** — see [Trust & verification](#trust--verification).
+- **Contributors** — see [Build & contribute](#build--contribute).
+
+## How it fits together
+
+You already run your own VPN server(s). Nothing here replaces them. This server
+sits beside them and only handles *distributing the config that points at them*:
+
+```
+   Your VPN servers (v2ray / SSH)  ◀── users' apps connect here for the tunnel
+            ▲
+            │ your config points at them
+            │
+   ┌────────┴─────────┐     you post a LINK (no config inside):
+   │  this server     │ ───  npvtunnel://join?…  ───▶  user taps it
+   │ (config handout) │
+   └────────┬─────────┘
+            │  each time the user's app connects, it asks this server for the
+            └─ config, which you authored in configs.json and which already
+               carries the working credential your VPN server accepts.
+```
+
+So:
+
+- **The link/file you post contains no config** — just a pointer to this server.
+- **The real config is fetched from this server**, gated by your attestation /
+  rate-limit policy, with a signed receipt the app verifies before using it.
+- **This server does not run or control your VPN server.** It distributes a
+  static, already-working credential you placed in `configs.json` for a data
+  plane run by you (or whoever runs it). The `expiresAt` it returns is a
+  client *re-fetch cadence*, not a server-enforced expiry.
+
+---
+
+## Quick start
+
+Install a signed release binary — no Go toolchain needed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mukswilly/npvtunnel-creator-server/main/install.sh | sh
+```
+
+The installer downloads the right binary for your CPU, **verifies its checksum
+and cosign signature**, installs it to `/usr/local/bin/creator-server`, and (as
+root) creates the `creator` user, a state directory, and a systemd unit. Read it
+first if you like: `curl -fsSL …/install.sh | less`.
+
+**Docker:**
+
+```sh
+docker run -d --name creator-server --restart unless-stopped \
+  -v creator-state:/var/lib/creator-server -p 127.0.0.1:8443:8443 \
+  ghcr.io/mukswilly/npvtunnel-creator-server:latest \
+  -addr :8443 -state-dir /var/lib/creator-server \
+  -public-issuer-url https://issuer.yourdomain.example/v1/issue
+```
+
+**From source** (Go 1.25+): `go build -o creator-server .` · check with
+`creator-server version`.
+
+---
+
+## Deploy
+
+Shape: this binary on `127.0.0.1:8443`, an HTTPS reverse proxy in front, a
+backed-up state directory.
+
+1. **Provision** a small VPS (~$5/mo, `amd64` or `arm64`) and point a domain at
+   it (e.g. `issuer.yourdomain.example`). This is separate from your VPN
+   server(s).
+2. **Install** with the one-liner above.
+3. **Pick how TLS is terminated** — two options:
+
+   **A. Built-in (simplest — no reverse proxy).** Let the binary obtain and
+   auto-renew its own Let's Encrypt certificate. Install with
+   `--builtin-tls issuer.yourdomain.example --acme-email you@example.com`, or
+   run the binary directly:
+   ```sh
+   creator-server -state-dir /var/lib/creator-server \
+     -domain issuer.yourdomain.example -acme-email you@example.com
+   ```
+   It serves `:443`, answers ACME challenges on `:80`, and derives
+   `-public-issuer-url` for you. Needs ports 80+443 reachable and the
+   domain's DNS pointing here.
+
+   **B. Behind a reverse proxy.** Set your domain in the unit and front
+   `127.0.0.1:8443` with Caddy/nginx:
+   ```sh
+   sudo sed -i 's#https://CHANGE_ME.example/v1/issue#https://issuer.yourdomain.example/v1/issue#' \
+     /etc/systemd/system/creator-server.service
+   ```
+   ```
+   issuer.yourdomain.example { reverse_proxy 127.0.0.1:8443 }
+   ```
+   When bound to loopback the server auto-trusts `X-Forwarded-For` from
+   localhost, so the standard local-proxy setup needs no `-trusted-proxy`.
+5. **Start it:**
+   ```sh
+   sudo systemctl enable --now creator-server
+   curl -sS http://127.0.0.1:8443/healthz   # → ok
+   ```
+6. **⚠ Back up your key.** First run generates `creator-key.pem` in the state
+   dir. **Losing it breaks every recipient** (they pin its public half).
+   Copy it somewhere safe, off the box. See [State & backups](#state--backups).
+
+---
+
+## Using it
+
+### 1. Write your config
+
+Configs live in `<state-dir>/configs.json`. Each entry pairs a stable 16-byte
+`configId` with the config you want to hand out — pointing at **your** VPN
+server. Put the **already-working credential** your VPN server accepts straight
+into the config. The server returns this config **verbatim** to gated
+recipients; it does not mint, derive, or rewrite the credential.
+
+```json
+[
+  {
+    "configId": "base64url-no-pad of 16 random bytes",
+    "config": {
+      "name": "Example config",
+      "address": "vpn.yourdomain.example:443",
+      "type": "V2RAY",
+      "v2rayProfile": {
+        "server": "vpn.yourdomain.example",
+        "serverPort": "443",
+        "password": "a1b2c3d4-0000-4000-8000-000000000001"
+      }
+    }
+  }
+]
+```
+
+- **`config`** is a complete **v2ray** or **SSH** config — the only two protocols
+  NpvTunnel supports. `config.type` (`V2RAY` or `SSH`) picks which; everything
+  else (server address, port, transport settings) is just that protocol's normal
+  fields. The credential goes in the slot your server checks —
+  `v2rayProfile.password` above (a UUID for VLESS/VMess), or
+  `sshConfig.sshPassword` for an SSH config.
+- **`credTtlSec`** *(optional)*: how long before the app should re-fetch the
+  config, in seconds — carried back as `expiresAt`. Omit (or `0`) for the
+  default of **3600** (1 hour). Must be between **60** and **604800** (7 days).
+  Because this server doesn't run your data plane, this is a client re-fetch
+  cadence, not a server-enforced credential expiry. Independent of
+  `attestationPolicy` — set it even in the default `off` mode. (Under `soft`
+  mode, an unattested device re-fetches at the shorter of this and
+  `softFailureTtlSec`.)
+- `configs.json` is **hot-reloaded** when you edit it — no restart needed. A
+  malformed edit is rejected and the last-good registry stays live (logged).
+  `creator-server config add` appends entries for you.
+
+`creator-server mint` (below) prints a fresh `configId` and a ready-to-paste
+`configs.json` entry, so you don't have to hand-build one.
+
+### 2. Hand out the config
+
+Both ways below give the recipient a *pointer*, not the config. Pick by how you
+reach your audience:
+
+**A. Share link — public channel / many people.** Mint a token for a registered
+`configId` and post the link:
+
+```sh
+creator-server mint-share-link \
+  -state-dir /var/lib/creator-server \
+  -config-id <configId> \
+  -redemption-url https://issuer.yourdomain.example/v1/redeem \
+  -redemptions 100 -expires-in 168h        # 168h = 7 days; 0 = no expiry
+```
+
+It prints a `npvtunnel://join?u=…&t=…` link. Post it; recipients tap once and
+their app sets itself up. (`-label "telegram-main"` tags redemptions in your
+audit log so you can tell which channel a leak came from.)
+
+**B. Direct — when you already have someone's device pubkey.** They copy their
+device's public key from the app and send it to you:
+
+```sh
+creator-server mint \
+  -state-dir /var/lib/creator-server \
+  -recipient-pubkey <theirDevicePubkey-base64url> \
+  -issuer-url https://issuer.yourdomain.example/v1/issue \
+  -out recipient.npvs
+```
+
+For several people, repeat `-recipient-pubkey` or give it a comma-separated
+list (`-recipient-pubkey A,B,C`) — or pass `-recipient-pubkeys-file` with one
+pubkey per line. It prints the `configId` and a `configs.json` template;
+register that entry, then send each person the `.npvs` file (any channel — it
+has no config in it).
+
+### 3. Burn a leaked share link
+
+If a `npvtunnel://join` link you posted is being passed around more widely than
+you intended, kill it so no new people can redeem it:
+
+```sh
+creator-server revoke-token -state-dir /var/lib/creator-server -token <token>
+```
+
+Further redemption attempts get `404`. Configs already fetched through past
+redemptions keep working until they expire — so keep TTLs short. To rotate the
+underlying technique, change your VPN server + `configs.json` and re-issue.
+
+---
+
+## Tuning (optional)
+
+Defaults work out of the box. Skip this unless you're managing a closed
+audience.
+
+### Attestation tiers
+
+`attestationPolicy` controls how the server treats devices:
+
+| Mode | Behavior |
+|---|---|
+| `off` (default) | Ignore attestation. |
+| `observe` | Log what the client claimed; never block. |
+| `soft` | Serve everyone, but make unattested devices re-fetch sooner (`softFailureTtlSec`, default 300s). |
+| `strict` | Reject devices that can't produce a Play Integrity / App Attest token. |
+
+For real hardware checks, name a `verifier` and opt into gates:
+
+```json
+"attestationPolicy": {
+  "mode": "strict",
+  "verifier": "android-key-attestation",
+  "requireHardwareBacked": true,
+  "requireTrustedRoot": true,
+  "requireVerifiedBoot": true
+}
+```
+
+This anchors the device's attestation chain at Google's roots (bundled in the
+binary — no Google Cloud account needed); the three `require*` gates reject
+emulators, self-signed chains, and rooted/unlocked devices. `apple-app-attest`
+is the iOS equivalent (set `appId` to `TEAMID.bundle.id`; don't set
+`requireVerifiedBoot` — iOS doesn't expose it).
+
+> **⚠ Audience-fit warning.** Do **not** enable `strict` / `requireVerifiedBoot`
+> for sideload-heavy audiences. Many users in censored regions run rooted phones
+> *by necessity*, and these gates lock them out. They're for managed audiences
+> where everyone is on stock firmware. Open audiences should leave attestation
+> `off` and rely on short re-fetch cadences + your own data-plane rotation.
+
+### Rate limit
+
+The issuer **always** caps how many configs one device fetches per config per
+hour — `30/h` by default, even with attestation off. The cap is keyed on the
+**device key, not the source IP**, so users sharing one carrier / CGNAT
+address aren't collectively throttled. `maxIssuancesPerHour` (on
+`attestationPolicy`) raises it for a config. Over-limit requests get `429` with
+`Retry-After`. The public `/v1/redeem` endpoint additionally has a per-IP limit
+(30/h), and the server sheds load with `503` past a concurrency cap.
+
+---
+
+## Operating it
+
+### State & backups
+
+With `-state-dir` set, the server keeps these files (`0600`, owner `creator`):
+
+| File | What it is | Lose it and… |
+|---|---|---|
+| `creator-key.pem` | Your identity — the signing key recipients pin | every recipient must re-import. **Back up.** |
+| `audit-salt.bin` | Salt that hashes device IDs in the audit log | log correlation resets (nothing cryptographic). |
+| `configs.json` | The configs you hand out — **you write this** | nothing to hand out. |
+| `redemption-tokens.json` | Live share-link tokens — **managed by the subcommands** | outstanding links stop working. |
+
+Back the whole directory up in one step with `creator-server backup
+-state-dir <dir>` — it writes a single `.tar.gz`; store it off the box.
+
+Without `-state-dir` the server runs with ephemeral keys and serves a stub
+config — **dev/test only**, since every restart breaks recipients.
+
+Both `configs.json` and `redemption-tokens.json` are **hot-reloaded** on
+change, so `config add` / `mint-share-link` take effect without a restart.
+
+### The reverse-proxy / rate-limit gotcha
+
+The per-IP rate limit on redemptions needs each client's real IP:
+
+- **Behind a reverse proxy:** set `-trusted-proxy` to the proxy's CIDR (e.g.
+  `-trusted-proxy 127.0.0.1/32`), or everyone collapses onto the proxy's IP.
+- **Directly on the internet:** leave `-trusted-proxy` empty, so
+  `X-Forwarded-For` is ignored and clients can't spoof their rate-limit key.
+
+### Audit logs
+
+Each handout emits one structured log line with **no raw device IDs, no
+attestation tokens, no IPs, no secrets** — device IDs are salted-hashed
+(`devicePkHash`) so a leaked log can't expose your recipient list. Fields:
+`event`, `devicePkHash`, `configId`, `claimedPlatform`, `tokenPresent`,
+`policyMode`, `ttlSec`. Route the output through journald or a file +
+`logrotate`, with short retention.
+
+> Honest limit: the salt lives on the same disk as the log, so a **full VPS
+> seizure** (log + salt together) can re-identify devices. The hashing defends
+> against a leaked log *file*, not against someone taking the whole machine.
+
+### The VPN-server contract
+
+This server doesn't run your tunnel and has no access to your data plane. It
+hands out the static config you wrote in `configs.json`, **verbatim**, including
+whatever credential your VPN server already accepts (a VLESS UUID, an SSH
+password, etc.). Provisioning that credential on your v2ray/SSH server, and
+rotating it when you need to, is your job and is intentionally out of scope here.
+
+What this server adds on top of just posting the config publicly: the handout is
+gated by your attestation / rate-limit policy, and every response carries a
+receipt signed by `creator-key.pem` that the app verifies before using the
+config. To bound the blast radius of a leak, keep credentials cheap to rotate on
+your data plane and use short `credTtlSec` re-fetch cadences so recipients pick
+up a rotation quickly.
+
+The server is a single instance; rate-limit counters are in-memory and
+per-process.
+
+---
+
+## Trust & verification
+
+- **No central infrastructure.** It talks only to your own VPN server and the
+  clients that connect — no phone-home, no outbound calls.
+- **No per-creator cloud accounts.** Google's and Apple's attestation roots are
+  bundled into the binary (`attestation-roots/`).
+- **Reproducible, signed releases.** Release binaries and the container image
+  are built in CI and **cosign-signed** (keyless / Sigstore). Verify any
+  download — even one from a mirror or a friend — against the signing identity;
+  the installer does this automatically when `cosign` is present. Commands in
+  [RELEASING.md](RELEASING.md#how-users-verify-a-download).
+- **The protocol is implemented right here** — read the handlers in
+  [`server.go`](server.go) and [`redeem.go`](redeem.go).
+
+---
+
+## Reference
+
+### CLI flags (server)
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `-addr` | `:8443` | Bind address. |
+| `-state-dir` | (none) | Persistent state directory. Empty = ephemeral/stub mode (dev/test only). |
+| `-public-issuer-url` | (none) | This server's externally-reachable `/v1/issue` URL. Required for redemptions (auto-derived from `-domain`). |
+| `-domain` | (none) | Public hostname for **built-in HTTPS** via Let's Encrypt — no reverse proxy. Serves `:443`, ACME on `:80`, derives `-public-issuer-url`. |
+| `-acme-email` | (none) | Contact email for the Let's Encrypt account (use with `-domain`). |
+| `-acme-staging` | `false` | Use Let's Encrypt staging while testing the ACME flow. |
+| `-cert` / `-key` | (none) | TLS cert/key PEM (manual cert). If empty and no `-domain`, serves plain HTTP (front it with a proxy). |
+| `-trusted-proxy` | (none) | CIDRs of trusted reverse proxies for `X-Forwarded-For`. Auto-defaults to localhost on a loopback bind (see above). |
+| `-debug` | `false` | Verbose logging. |
+
+### Subcommands
+
+Run any with `-h` for full flags.
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| (none) | Run the server. | the table above |
+| `init` | Guided first-run setup (state dir, key, TLS choice, next steps). | `-state-dir`, `-domain`, `-tls`, `-acme-email` |
+| `config add` / `config ls` | Register a config / list registered configs. | `-state-dir`; (`-name -server -port -password -address`) or `-config-file` |
+| `token ls` / `token revoke` | List share-link tokens with status / burn one. | `-state-dir`, `-token` |
+| `status` | Snapshot: creator pubkey, #configs, #live tokens. | `-state-dir` |
+| `backup` | Bundle the state dir (key + salt + configs + tokens) into one `.tar.gz`. | `-state-dir`, `-out` |
+| `mint` | Make a discovery pointer (`.npvs`) for known recipient pubkey(s). | `-state-dir`, `-recipient-pubkey` (repeatable / comma-list) / `-recipient-pubkeys-file`, `-issuer-url`, `-out` |
+| `mint-share-link` | Make a `npvtunnel://join` link + redemption token. | `-state-dir`, `-config-id`, `-redemption-url`, `-redemptions`, `-expires-in`, `-label` |
+| `revoke-token` | Burn a leaked share-link token. | `-state-dir`, `-token` |
+| `version` | Print build version. | — |
+
+### Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/issue` | Return your `configs.json` config verbatim, gated by your policy and signed. Called by the app to (re-)fetch the config. |
+| `POST /v1/redeem` | Turn a share-link token into a per-recipient discovery pointer (not the config). |
+| `GET /v1/creator-pubkey` | The creator's public signing key (dev/test; recipients pin it from the pointer). |
+| `GET /healthz` | Liveness probe (`ok`). |
+
+---
+
+## Build & contribute
+
+```sh
+go build -o creator-server .   # Go 1.25+, single static binary, no runtime deps
+go test ./...                  # issue / redeem / attestation / rate-limit suite
+```
+
+For local manual testing, run against a scratch `-state-dir` with no `-cert` and
+`curl` the endpoints over `http://localhost:8443/v1/...`. Release and download-
+verification details are in [RELEASING.md](RELEASING.md).
+
+## License
+
+[Apache-2.0](LICENSE) — see also [NOTICE](NOTICE). Open by design, so anyone can
+audit it and build their own.
