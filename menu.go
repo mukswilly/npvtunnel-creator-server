@@ -233,7 +233,7 @@ func (c *console) showMain() {
 	list := tview.NewList().ShowSecondaryText(true)
 	list.SetSecondaryTextColor(tcell.ColorGray)
 	list.AddItem("Register a config", "Paste the string your app exported (Export -> Copy for creator-server)", '1', c.showAddConfig)
-	list.AddItem("Configs", "List, rotate credential, rename, remove", '2', c.showConfigs)
+	list.AddItem("Configs", "List, share, replace, remove your configs", '2', c.showConfigs)
 	list.AddItem("Mint a share link", "Create a npvtunnel://join link to post", '3', func() { c.showMint("") })
 	list.AddItem("Direct handout", "Mint a .npvs pointer for a device pubkey", '4', func() { c.showDirectMint("") })
 	list.AddItem("Share links", "List and burn redemption tokens", '5', c.showTokens)
@@ -483,9 +483,9 @@ func (c *console) showServer() {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(formatLifecycle(snap, now))
-	b.WriteString("\n  [white::b]Identity[-:-:-]\n")
+	b.WriteString("\n  [white::b]Your public key[-:-:-]  (recipients pin this automatically — it rides inside every config you hand out; you don't send it separately)\n")
 	fmt.Fprintf(&b, "  pubkey     %s\n", c.state.CreatorPubKeyCompressedB64())
-	fmt.Fprintf(&b, "  key file   %s\n", filepath.Join(c.stateDir, "creator-key.pem"))
+	fmt.Fprintf(&b, "  key file   %s  [gray](back this up — losing it breaks everyone)[-]\n", filepath.Join(c.stateDir, "creator-key.pem"))
 	fmt.Fprintf(&b, "  registry   %d configs · %d live share links\n", len(configs), live)
 	if !snap.Configured {
 		b.WriteString("\n  [yellow]Not set up yet — run setup to configure your domain + TLS.[-]\n")

@@ -220,8 +220,7 @@ func TestConsoleBuilds(t *testing.T) {
 		{"mint", func() { c.showMint("") }},
 		{"configactions", func() { c.showConfigActions(id) }},
 		{"directmint", func() { c.showDirectMint(id) }},
-		{"rotate", func() { c.showRotateCredential(id) }},
-		{"rename", func() { c.showRenameConfig(id) }},
+		{"replace", func() { c.showReplaceConfig(id) }},
 	} {
 		tc.open()
 		if !c.pages.HasPage(tc.page) {

@@ -218,23 +218,11 @@ func runMintSubcommand(args []string) int {
 			"issuerUrl:     %s\n"+
 			"configId:      %s\n"+
 			"envelope size: %d bytes\n"+
-			"\nAdd this entry to configs.json (the issuer returns config verbatim):\n"+
-			`{
-  "configId": "%s",
-  "config": {
-    "name":    "<display name>",
-    "address": "<vpn-server>:<port>",
-    "type":    "V2RAY",
-    "v2rayProfile": {
-      "server":     "<vpn-server>",
-      "serverPort": "<port>",
-      "password":   "a1b2c3d4-0000-4000-8000-000000000001",
-      "// ...":     "the already-working credential your VPN server accepts"
-    }
-  },
-  "attestationPolicy": { "mode": "off" }
-}
-`+"\n",
+			"\nNext: register the config this points at, under configId %s — paste the\n"+
+			"string your app exported (Export -> \"Copy for creator-server\") as the\n"+
+			"\"config\" value of a configs.json entry with that configId. The issuer\n"+
+			"hands that config to the recipient verbatim. (The console does this for\n"+
+			"you: register the config, then make a file for the device from it.)\n\n",
 		len(pubkeys), *issuerURL, configIDB64, len(res.EnvelopeBytes),
 		configIDB64,
 	)

@@ -132,7 +132,7 @@ func TestConsoleRendersServerScreen(t *testing.T) {
 
 	got := renderConsoleScreen(t, c, c.showServer)
 	for _, want := range []string{
-		"Server", "active", "issuer.alpha.example", "Identity", "pubkey",
+		"Server", "active", "issuer.alpha.example", "public key", "pubkey",
 		"Restart", "View logs", // privileged action buttons (canManage=true, running)
 	} {
 		if !strings.Contains(got, want) {
