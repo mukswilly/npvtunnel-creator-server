@@ -135,6 +135,8 @@ func main() {
 			os.Exit(runStatusSubcommand(os.Args[2:]))
 		case "backup":
 			os.Exit(runBackupSubcommand(os.Args[2:]))
+		case "service":
+			os.Exit(runServiceSubcommand(os.Args[2:]))
 		case "version", "-v", "--version":
 			os.Exit(runVersionSubcommand())
 		case "help", "-h", "--help":
@@ -148,7 +150,7 @@ func main() {
 				fmt.Fprintf(os.Stderr,
 					"creator-server: unknown subcommand %q\n"+
 						"  console:        menu  (interactive; also: bare `creator-server` on a terminal)\n"+
-						"  setup & manage: init, config, token, status, backup\n"+
+						"  setup & manage: init, service, config, token, status, backup\n"+
 						"  share/handout:  mint-share-link, revoke-token, mint\n"+
 						"  other:          version\n"+
 						"  no subcommand:  run the issuer server (see -h for flags)\n",

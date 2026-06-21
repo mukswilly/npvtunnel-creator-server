@@ -94,7 +94,13 @@ docker run -d --name creator-server --restart unless-stopped \
 
 ## Deploy
 
-Shape: this binary on `127.0.0.1:8443`, an HTTPS reverse proxy in front, a
+> **Easiest path: let the console set it up.** After installing the binary, run
+> `sudo -u creator creator-server`. The first-run **setup wizard** asks for your
+> hostname + TLS mode, writes and starts the systemd unit, waits for HTTPS, and
+> prompts you to back up your key — no flags, no editing units. The manual steps
+> below are the scripted equivalents.
+
+Shape: this binary on `127.0.0.1:8443` (proxy mode) or `:443` (built-in TLS), a
 backed-up state directory.
 
 1. **Provision** a small VPS (~$5/mo, `amd64` or `arm64`) and point a domain at
@@ -115,11 +121,10 @@ backed-up state directory.
    `-public-issuer-url` for you. Needs ports 80+443 reachable and the
    domain's DNS pointing here.
 
-   **B. Behind a reverse proxy.** Set your domain in the unit and front
-   `127.0.0.1:8443` with Caddy/nginx:
+   **B. Behind a reverse proxy.** Write the unit for proxy mode (one command —
+   no editing files), then front `127.0.0.1:8443` with Caddy/nginx:
    ```sh
-   sudo sed -i 's#https://CHANGE_ME.example/v1/issue#https://issuer.yourdomain.example/v1/issue#' \
-     /etc/systemd/system/creator-server.service
+   sudo creator-server service install -tls proxy -domain issuer.yourdomain.example
    ```
    ```
    issuer.yourdomain.example { reverse_proxy 127.0.0.1:8443 }
@@ -140,9 +145,11 @@ backed-up state directory.
 ## Using it
 
 > **Prefer not to type flags?** Run **`creator-server menu`** (or just
-> `creator-server` on a terminal) for a full-screen, menu-driven console —
-> register configs, mint share links, burn tokens, check status, back up, all
-> from one screen. The steps below are the scriptable equivalents.
+> `creator-server` on a terminal) for a full-screen console that drives the whole
+> lifecycle: first-run setup, **server controls** (start/stop/restart, logs,
+> health, TLS-cert status), register/rotate/remove configs, mint + burn share
+> links, direct `.npvs` handout, and backup — all from one screen. The steps
+> below are the scriptable equivalents.
 
 ### 1. Register your config
 
@@ -384,8 +391,9 @@ Run any with `-h` for full flags.
 | Command | Purpose | Key flags |
 |---|---|---|
 | (none) | Run the server — or, on an interactive terminal, open the console. | the table above |
-| `menu` | **Interactive console** — full-screen menu to register configs, mint links, manage tokens, check status, back up. | `-state-dir` |
-| `init` | Guided first-run setup (state dir, key, TLS choice, next steps). | `-state-dir`, `-domain`, `-tls`, `-acme-email` |
+| `menu` | **Interactive console** — drives the whole lifecycle: setup wizard, server controls (start/stop/restart, logs, health, cert), register/rotate/remove configs, mint + burn share links, direct `.npvs` handout, backup. Bare `creator-server` on a terminal opens it. | `-state-dir` |
+| `service` | Root helper the console + `install.sh` shell into so the systemd unit has **one** generator: `install` (write unit), `enable-now`, `start`/`stop`/`restart`, `status`, `logs`. | `install -tls -domain [-acme-email]`; `logs -n` |
+| `init` | Guided first-run setup for scripts (state dir, key, TLS choice, next steps). The console's wizard is the friendlier equivalent. | `-state-dir`, `-domain`, `-tls`, `-acme-email` |
 | `config add` / `config ls` | Register a config (paste the app's export string) / list registered configs. | `-state-dir`, `-config` (the app's export string); or `-config-file` / quick-build flags |
 | `token ls` / `token revoke` | List share-link tokens with status / burn one. | `-state-dir`, `-token` |
 | `status` | Snapshot: creator pubkey, #configs, #live tokens. | `-state-dir` |

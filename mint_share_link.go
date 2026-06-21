@@ -9,6 +9,38 @@ import (
 	"time"
 )
 
+// newShareLink generates a redemption token, registers it against configID,
+// and returns the token + npvtunnel://join link. Inputs must already be
+// validated (configID registered, https URL, redemptions > 0); this is the
+// single token-builder shared by the CLI subcommand and the console so the
+// token/link format can't diverge.
+func newShareLink(state *State, configID, redemptionURL string, redemptions int, expiresAt, label string) (token, joinLink string, err error) {
+	tokenBytes := make([]byte, 16)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", "", err
+	}
+	token = b64url.EncodeToString(tokenBytes)
+	if err := state.AddRedemptionToken(RedemptionToken{
+		Token:                token,
+		ConfigID:             configID,
+		RemainingRedemptions: redemptions,
+		ExpiresAt:            expiresAt,
+		CreatedAt:            time.Now().UTC().Format(time.RFC3339),
+		Label:                label,
+	}); err != nil {
+		return "", "", err
+	}
+	return token, joinShareLink(redemptionURL, token), nil
+}
+
+// joinShareLink formats the npvtunnel://join deep link. The redemption URL is
+// base64'd so its colons/slashes don't fight the URI parser; the token is
+// already URL-safe base64url.
+func joinShareLink(redemptionURL, token string) string {
+	return fmt.Sprintf("npvtunnel://join?u=%s&t=%s",
+		b64url.EncodeToString([]byte(redemptionURL)), token)
+}
+
 // runMintShareLinkSubcommand handles `creator-server mint-share-link ...`.
 //
 // Generates a random redemption token, validates that the named
@@ -111,43 +143,17 @@ func runMintShareLinkSubcommand(args []string) int {
 		return 1
 	}
 
-	// Generate 16 random bytes for the token. base64url-no-pad gives
-	// ~22 chars — short enough for a deep-link URL, long enough to be
-	// unguessable.
-	tokenBytes := make([]byte, 16)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		fmt.Fprintln(os.Stderr, "mint-share-link: rand:", err)
-		return 1
-	}
-	token := b64url.EncodeToString(tokenBytes)
-
-	now := time.Now().UTC()
+	// Compute expiry, then register via the shared token-builder (same code
+	// path the console uses).
 	expiresAt := ""
 	if *expiresIn > 0 {
-		expiresAt = now.Add(*expiresIn).Format(time.RFC3339)
+		expiresAt = time.Now().UTC().Add(*expiresIn).Format(time.RFC3339)
 	}
-
-	tokenEntry := RedemptionToken{
-		Token:                token,
-		ConfigID:             *configID,
-		RemainingRedemptions: *redemptions,
-		ExpiresAt:            expiresAt,
-		CreatedAt:            now.Format(time.RFC3339),
-		Label:                *label,
-	}
-	if err := state.AddRedemptionToken(tokenEntry); err != nil {
-		fmt.Fprintln(os.Stderr, "mint-share-link: register token:", err)
+	token, joinLink, err := newShareLink(state, *configID, *redemptionURL, *redemptions, expiresAt, *label)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mint-share-link:", err)
 		return 1
 	}
-
-	// Build the join link. Format: npvtunnel://join?u=<base64url(redemptionUrl)>&t=<token>
-	// The URL is base64'd so the URI parser doesn't fight with the
-	// embedded colons/slashes. Token is base64url-no-pad (already
-	// URI-safe) so it's plain.
-	joinLink := fmt.Sprintf("npvtunnel://join?u=%s&t=%s",
-		b64url.EncodeToString([]byte(*redemptionURL)),
-		token,
-	)
 
 	// Machine-parseable stdout.
 	fmt.Printf("token       %s\n", token)

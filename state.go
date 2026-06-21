@@ -37,8 +37,10 @@ import (
 // Same value for every recipient of the same logical config; routing
 // works.
 //
-// Lives in state-dir/configs.json. configs.json reload requires a
-// restart; redemption-tokens.json hot-reloads on mtime change.
+// Lives in state-dir/configs.json. Both configs.json and
+// redemption-tokens.json hot-reload on mtime change — the issue/redeem
+// handlers re-read them (ReloadConfigsIfChanged), so a `config add` /
+// rotate / mint-share-link takes effect without a restart.
 //
 // # The Config field
 //

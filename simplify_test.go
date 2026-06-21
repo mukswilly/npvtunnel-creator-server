@@ -183,9 +183,22 @@ func TestConsoleBuilds(t *testing.T) {
 	if !c.pages.HasPage("addconfig") {
 		t.Fatal("addconfig page missing")
 	}
-	c.showStatus()
-	if !c.pages.HasPage("status") {
-		t.Fatal("status page missing")
+	// Server screen: inject fakes so it builds without systemd or network.
+	c.svc = &fakeController{}
+	c.health = fakeHealth{}
+	c.port = fakePort{}
+	c.cert = fakeCert{}
+	c.showServer()
+	if !c.pages.HasPage("server") {
+		t.Fatal("server page missing")
+	}
+	c.showLogs()
+	if !c.pages.HasPage("logs") {
+		t.Fatal("logs page missing")
+	}
+	c.showSetupWizard()
+	if !c.pages.HasPage("setup") {
+		t.Fatal("setup page missing")
 	}
 	// Empty-state screens (no configs / no tokens yet) and the backup
 	// confirm just need to build without panicking.
@@ -194,17 +207,26 @@ func TestConsoleBuilds(t *testing.T) {
 	c.showMint("")
 	c.showBackup()
 
-	// With a registered config, the configs table + mint form build.
-	if _, err := c.appendConfig([]byte(`{"name":"x","type":"V2RAY"}`)); err != nil {
+	// With a registered config, the configs table + per-config screens build.
+	id, err := c.appendConfig([]byte(`{"name":"x","type":"V2RAY","v2rayProfile":{"password":"p"}}`))
+	if err != nil {
 		t.Fatalf("appendConfig: %v", err)
 	}
-	c.showConfigs()
-	if !c.pages.HasPage("configs") {
-		t.Fatal("configs page missing after a config was added")
-	}
-	c.showMint("")
-	if !c.pages.HasPage("mint") {
-		t.Fatal("mint page missing after a config was added")
+	for _, tc := range []struct {
+		page string
+		open func()
+	}{
+		{"configs", c.showConfigs},
+		{"mint", func() { c.showMint("") }},
+		{"configactions", func() { c.showConfigActions(id) }},
+		{"directmint", func() { c.showDirectMint(id) }},
+		{"rotate", func() { c.showRotateCredential(id) }},
+		{"rename", func() { c.showRenameConfig(id) }},
+	} {
+		tc.open()
+		if !c.pages.HasPage(tc.page) {
+			t.Fatalf("%s page missing", tc.page)
+		}
 	}
 }
 

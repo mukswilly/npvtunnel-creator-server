@@ -1,9 +1,15 @@
-# systemd unit for npvtunnel-creator-server.
-# Installed automatically by install.sh; committed here for reference and for
-# manual installs. Binds to localhost — terminate TLS with a reverse proxy
-# (Caddy/nginx) in front, as described in the README.
+# systemd unit for npvtunnel-creator-server — REFERENCE COPY.
 #
-# EDIT the ExecStart -public-issuer-url to your own domain before enabling.
+# You normally do NOT hand-install this. `install.sh` (and the console's setup
+# wizard) generate the unit by calling `creator-server service install`, which
+# is the single source of truth for its contents — this file is kept in sync
+# with that generator (renderUnitFile in service.go) purely for reading.
+#
+# This reference shows reverse-proxy mode (binds loopback; terminate TLS with
+# Caddy/nginx in front). EDIT the ExecStart -public-issuer-url to your own
+# domain before enabling, or just run:
+#   sudo creator-server service install -tls proxy -domain issuer.yourname.example
+# For built-in Let's Encrypt instead, use `-tls builtin -domain <host>`.
 
 [Unit]
 Description=NpvTunnel creator-server (issuer + share-link redemption)
@@ -14,10 +20,7 @@ Wants=network-online.target
 Type=simple
 User=creator
 Group=creator
-ExecStart=/usr/local/bin/creator-server \
-  -addr 127.0.0.1:8443 \
-  -state-dir /var/lib/creator-server \
-  -public-issuer-url https://CHANGE_ME.example/v1/issue
+ExecStart=/usr/local/bin/creator-server -addr 127.0.0.1:8443 -state-dir /var/lib/creator-server -public-issuer-url https://CHANGE_ME.example/v1/issue
 Restart=on-failure
 RestartSec=2
 

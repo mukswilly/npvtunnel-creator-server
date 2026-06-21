@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,7 +28,20 @@ const defaultConsoleStateDir = "/var/lib/creator-server"
 // consoleSettings persists the small bits the console remembers between runs,
 // so the creator doesn't retype them. Lives in <state-dir>/console.json.
 type consoleSettings struct {
-	RedemptionURL string `json:"redemptionUrl,omitempty"`
+	RedemptionURL string      `json:"redemptionUrl,omitempty"`
+	Deployment    *deployment `json:"deployment,omitempty"`
+}
+
+// deployment records the server setup the console configured (or adopted), so
+// it knows the domain/TLS without re-prompting and can derive issuer/redeem
+// URLs. SetupComplete is the primary first-run signal (corroborated by unit
+// presence on the adopt path).
+type deployment struct {
+	SetupComplete bool   `json:"setupComplete"`
+	Domain        string `json:"domain,omitempty"`
+	TLSMode       string `json:"tlsMode,omitempty"` // "builtin" | "proxy"
+	Addr          string `json:"addr,omitempty"`
+	AcmeEmail     string `json:"acmeEmail,omitempty"`
 }
 
 type console struct {
@@ -36,6 +50,35 @@ type console struct {
 	stateDir string
 	state    *State
 	settings consoleSettings
+
+	// Server-management seams — real implementations in production, fakes in
+	// tests (so screens render without root, systemd, or the network).
+	svc       serviceController
+	health    healthChecker
+	port      portChecker
+	cert      certInspector
+	canManage bool // may we run the privileged service verbs (root or sudo -n)?
+}
+
+// deploy resolves the current deployment: the persisted block first, else an
+// adopt from an already-installed unit (install.sh user), else an unconfigured
+// default. Always carries the console's own -state-dir.
+func (c *console) deploy() DeployOpts {
+	if d := c.settings.Deployment; d != nil && (d.SetupComplete || d.Domain != "") {
+		return DeployOpts{
+			BinPath:   defaultBinPath,
+			StateDir:  c.stateDir,
+			Mode:      parseTLSMode(d.TLSMode),
+			Domain:    d.Domain,
+			AcmeEmail: d.AcmeEmail,
+			Addr:      d.Addr,
+		}.withDefaults()
+	}
+	if o, ok := adoptFromUnit(serviceUnitPath); ok {
+		o.StateDir = c.stateDir
+		return o.withDefaults()
+	}
+	return DeployOpts{StateDir: c.stateDir}.withDefaults()
 }
 
 func loadConsoleSettings(stateDir string) consoleSettings {
@@ -60,11 +103,16 @@ func newConsole(stateDir string) (*console, error) {
 		return nil, err
 	}
 	c := &console{
-		app:      tview.NewApplication(),
-		pages:    tview.NewPages(),
-		stateDir: stateDir,
-		state:    state,
-		settings: loadConsoleSettings(stateDir),
+		app:       tview.NewApplication(),
+		pages:     tview.NewPages(),
+		stateDir:  stateDir,
+		state:     state,
+		settings:  loadConsoleSettings(stateDir),
+		svc:       newSystemctlController(),
+		health:    httpHealthChecker{},
+		port:      dialPortChecker{},
+		cert:      autocertInspector{},
+		canManage: canManageSystemd(),
 	}
 	c.app.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		switch ev.Key() {
@@ -104,11 +152,24 @@ func runMenuSubcommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "      pass -state-dir <dir> to choose where state lives.")
 		return 1
 	}
-	if c.state.KeyWasCreated() {
+	// Route by setup state: a brand-new box gets the wizard; an install.sh user
+	// (unit but no console.json) is adopted onto the Server screen; an
+	// already-configured box goes straight to the menu.
+	state := c.detectSetupState()
+	switch state {
+	case setupAdopt:
+		c.adoptDeployment()
+		c.showServer()
+	case setupFirstRun:
+		c.showSetupWizard()
+	}
+	// The wizard gates on backup itself; on the other paths, nudge if this run
+	// just generated the signing key.
+	if state != setupFirstRun && c.state.KeyWasCreated() {
 		c.flash(fmt.Sprintf(
 			"Welcome — your creator identity was just created.\n\n"+
 				"Creator pubkey:\n%s\n\n"+
-				"BACK IT UP (option 6). Lose %s\nand every recipient breaks.",
+				"BACK IT UP (Back up state). Lose %s\nand every recipient breaks.",
 			c.state.CreatorPubKeyCompressedB64(),
 			filepath.Join(c.stateDir, "creator-key.pem")))
 	}
@@ -154,8 +215,10 @@ func (c *console) modal(msg string, buttons []string, done func(int, string)) {
 	c.pages.AddPage("modal", m, true, true)
 }
 
-func (c *console) flash(msg string)                  { c.modal(msg, []string{"OK"}, func(int, string) {}) }
-func (c *console) flashThen(msg string, then func()) { c.modal(msg, []string{"OK"}, func(int, string) { then() }) }
+func (c *console) flash(msg string) { c.modal(msg, []string{"OK"}, func(int, string) {}) }
+func (c *console) flashThen(msg string, then func()) {
+	c.modal(msg, []string{"OK"}, func(int, string) { then() })
+}
 func (c *console) confirm(msg string, yes func()) {
 	c.modal(msg, []string{"Yes", "No"}, func(_ int, label string) {
 		if label == "Yes" {
@@ -170,11 +233,12 @@ func (c *console) showMain() {
 	list := tview.NewList().ShowSecondaryText(true)
 	list.SetSecondaryTextColor(tcell.ColorGray)
 	list.AddItem("Register a config", "Paste the string your app exported (Export -> Copy for creator-server)", '1', c.showAddConfig)
-	list.AddItem("Configs", "List the configs you hand out", '2', c.showConfigs)
+	list.AddItem("Configs", "List, rotate credential, rename, remove", '2', c.showConfigs)
 	list.AddItem("Mint a share link", "Create a npvtunnel://join link to post", '3', func() { c.showMint("") })
-	list.AddItem("Share links", "List and burn redemption tokens", '4', c.showTokens)
-	list.AddItem("Server status", "Identity, counts, and how to run the server", '5', c.showStatus)
-	list.AddItem("Back up state", "Save your key + configs to one file", '6', c.showBackup)
+	list.AddItem("Direct handout", "Mint a .npvs pointer for a device pubkey", '4', func() { c.showDirectMint("") })
+	list.AddItem("Share links", "List and burn redemption tokens", '5', c.showTokens)
+	list.AddItem("Server", "Service health, TLS, identity, and controls", '6', c.showServer)
+	list.AddItem("Back up state", "Save your key + configs to one file", '7', c.showBackup)
 	list.AddItem("Sign off", "Exit the console", 'q', c.app.Stop)
 	c.switchTo("main", "Main menu", footerKeys("[yellow::b]Up/Dn[-:-:-]=Move  [yellow::b]Enter[-:-:-]=Select"), list)
 }
@@ -255,10 +319,10 @@ func (c *console) showConfigs() {
 	}
 	table.SetSelectedFunc(func(row, _ int) {
 		if row >= 1 && row-1 < len(list) {
-			c.showMint(list[row-1].ConfigID)
+			c.showConfigActions(list[row-1].ConfigID)
 		}
 	})
-	c.switchTo("configs", "Configs", footerKeys("[yellow::b]Enter[-:-:-]=Mint link"), table)
+	c.switchTo("configs", "Configs", footerKeys("[yellow::b]Enter[-:-:-]=Actions"), table)
 }
 
 // ─── mint a share link ─────────────────────────────────────────────────
@@ -283,6 +347,9 @@ func (c *console) showMint(prefillID string) {
 	}
 	selectedID := configs[initial].ConfigID
 	redemptionURL := c.settings.RedemptionURL
+	if redemptionURL == "" {
+		redemptionURL = c.deploy().RedeemURL() // derive https://<domain>/v1/redeem
+	}
 	redemptions := "100"
 	expiresIn := "168h"
 	label := ""
@@ -333,23 +400,11 @@ func (c *console) mintShareLink(configID, redemptionURL, redemptionsStr, expires
 			expiresAt = time.Now().UTC().Add(dur).Format(time.RFC3339)
 		}
 	}
-	tokenBytes := make([]byte, 16)
-	if _, err := rand.Read(tokenBytes); err != nil {
+	_, link, err := newShareLink(c.state, configID, redemptionURL, redemptions, expiresAt, strings.TrimSpace(label))
+	if err != nil {
 		return "", err
 	}
-	token := b64url.EncodeToString(tokenBytes)
-	if err := c.state.AddRedemptionToken(RedemptionToken{
-		Token:                token,
-		ConfigID:             configID,
-		RemainingRedemptions: redemptions,
-		ExpiresAt:            expiresAt,
-		CreatedAt:            time.Now().UTC().Format(time.RFC3339),
-		Label:                strings.TrimSpace(label),
-	}); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("npvtunnel://join?u=%s&t=%s",
-		b64url.EncodeToString([]byte(redemptionURL)), token), nil
+	return link, nil
 }
 
 // ─── share links (tokens) table ────────────────────────────────────────
@@ -408,9 +463,13 @@ func (c *console) showTokens() {
 	c.switchTo("tokens", "Share links", footerKeys("[yellow::b]Enter[-:-:-]=Burn link"), table)
 }
 
-// ─── status ────────────────────────────────────────────────────────────
+// ─── server lifecycle ──────────────────────────────────────────────────
 
-func (c *console) showStatus() {
+func (c *console) showServer() {
+	o := c.deploy()
+	acmeCacheDir := filepath.Join(c.stateDir, "acme")
+	snap := collectLifecycle(c.svc, c.health, c.port, c.cert, o, acmeCacheDir)
+
 	configs, _ := readConfigEntries(filepath.Join(c.stateDir, "configs.json"))
 	tokens, _ := loadRedemptionTokensFile(filepath.Join(c.stateDir, "redemption-tokens.json"))
 	now := time.Now().UTC()
@@ -420,24 +479,176 @@ func (c *console) showStatus() {
 			live++
 		}
 	}
-	text := fmt.Sprintf(
-		"\n  [white::b]Creator identity[-:-:-]\n"+
-			"  pubkey    %s\n"+
-			"  key file  %s\n\n"+
-			"  [white::b]Registry[-:-:-]\n"+
-			"  configs       %d\n"+
-			"  share links   %d total / %d live\n\n"+
-			"  [white::b]Run the issuer[-:-:-] (on this VPS, as a service)\n"+
-			"  creator-server -state-dir %s \\\n"+
-			"      -domain <your-host> -acme-email <you@example>\n\n"+
-			"  Built-in HTTPS via Let's Encrypt, no reverse proxy. Or use the\n"+
-			"  one-line installer to set it up as a systemd service.\n",
-		c.state.CreatorPubKeyCompressedB64(),
-		filepath.Join(c.stateDir, "creator-key.pem"),
-		len(configs), len(tokens), live, c.stateDir,
-	)
-	tv := tview.NewTextView().SetDynamicColors(true).SetText(text)
-	c.switchTo("status", "Server status", footerKeys(""), tv)
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(formatLifecycle(snap, now))
+	b.WriteString("\n  [white::b]Identity[-:-:-]\n")
+	fmt.Fprintf(&b, "  pubkey     %s\n", c.state.CreatorPubKeyCompressedB64())
+	fmt.Fprintf(&b, "  key file   %s\n", filepath.Join(c.stateDir, "creator-key.pem"))
+	fmt.Fprintf(&b, "  registry   %d configs · %d live share links\n", len(configs), live)
+	if !snap.Configured {
+		b.WriteString("\n  [yellow]Not set up yet — run setup to configure your domain + TLS.[-]\n")
+	}
+	if !c.canManage {
+		fmt.Fprintf(&b,
+			"\n  [gray]Service controls need privilege. Re-run with sudo, or:\n"+
+				"  sudo %s service <start|stop|restart>[-]\n", defaultBinPath)
+	}
+
+	tv := tview.NewTextView().SetDynamicColors(true).SetText(b.String())
+
+	form := tview.NewForm()
+	if c.canManage {
+		if snap.Svc.Running() {
+			form.AddButton("Restart", func() { c.serviceAction("restart") })
+			form.AddButton("Stop", func() { c.serviceAction("stop") })
+		} else {
+			form.AddButton("Start", func() { c.serviceAction("start") })
+		}
+		form.AddButton("Re-run setup", c.showSetupWizard)
+		form.AddButton("Update binary", c.updateBinary)
+	}
+	form.AddButton("View logs", c.showLogs)
+	form.AddButton("Back", c.showMain)
+	form.SetButtonsAlign(tview.AlignCenter)
+
+	body := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(tv, 0, 1, false).
+		AddItem(form, 3, 0, true)
+	c.switchTo("server", "Server", footerKeys("[yellow::b]Tab[-:-:-]=Buttons"), body)
+}
+
+// serviceAction runs a privileged systemd verb (start/stop/restart) and
+// refreshes the Server screen. It shells `sudo creator-server service <verb>`
+// from a goroutine via app.Suspend so sudo's prompt (if any) gets the real TTY
+// — never run a privileged shell-out from inside the tview event loop.
+func (c *console) serviceAction(verb string) {
+	go func() {
+		err := c.runServiceVerb(verb)
+		c.app.QueueUpdateDraw(func() {
+			if err != nil {
+				c.flashThen("Couldn't "+verb+" the service:\n\n"+err.Error(), c.showServer)
+				return
+			}
+			c.showServer()
+		})
+	}()
+}
+
+// runServiceVerb executes `creator-server service <verb>` with privilege: as
+// root directly, otherwise via sudo (the install.sh sudoers drop-in makes that
+// passwordless for this subcommand). app.Suspend hands over the terminal so any
+// sudo prompt + systemctl output is visible, then the app resumes.
+func (c *console) runServiceVerb(verb string, extraArgs ...string) error {
+	var err error
+	c.app.Suspend(func() { err = execServiceVerb(verb, extraArgs) })
+	return err
+}
+
+// execServiceVerb runs `creator-server service <verb>` with privilege (root
+// directly, else via sudo). The caller hands over the terminal (app.Suspend);
+// this just runs the command, so the setup wizard can chain install + enable in
+// a single terminal handover.
+func execServiceVerb(verb string, extraArgs []string) error {
+	name, args := serviceVerbCommand(os.Geteuid(), selfBinPath(), verb, extraArgs)
+	cmd := exec.Command(name, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+// serviceVerbCommand builds the (program, args) for a privileged service verb.
+// Pure, so the root-vs-sudo decision and arg shape are unit-tested without
+// running anything.
+func serviceVerbCommand(euid int, selfPath, verb string, extraArgs []string) (string, []string) {
+	base := append([]string{"service", verb}, extraArgs...)
+	if euid == 0 {
+		return selfPath, base
+	}
+	return "sudo", append([]string{selfPath}, base...)
+}
+
+// selfBinPath returns the path to invoke for privileged re-exec. Prefer the
+// canonical install path (which the sudoers drop-in authorizes); fall back to
+// the running executable.
+func selfBinPath() string {
+	if _, err := os.Stat(defaultBinPath); err == nil {
+		return defaultBinPath
+	}
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return defaultBinPath
+}
+
+// ─── server logs ───────────────────────────────────────────────────────
+
+func (c *console) showLogs() {
+	tv := tview.NewTextView().SetScrollable(true).SetWrap(false)
+	tv.SetText("Loading logs…")
+	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		if ev.Rune() == 'r' {
+			c.loadLogsInto(tv)
+			return nil
+		}
+		return ev
+	})
+	c.switchTo("logs", "Server logs", footerKeys("[yellow::b]r[-:-:-]=Refresh  [yellow::b]Up/Dn[-:-:-]=Scroll"), tv)
+	c.loadLogsInto(tv)
+}
+
+// loadLogsInto fetches the journal tail off the event loop (journalctl can
+// block on a slow disk) and writes it back via QueueUpdateDraw.
+func (c *console) loadLogsInto(tv *tview.TextView) {
+	go func() {
+		lines, err := c.svc.Logs(200)
+		var text string
+		switch {
+		case err != nil:
+			text = "Couldn't read logs:\n" + err.Error() +
+				"\n\n(journalctl may need privilege — try: sudo journalctl -u creator-server)"
+		case len(lines) == 0:
+			text = "(no log lines yet)"
+		default:
+			text = strings.Join(lines, "\n")
+		}
+		c.app.QueueUpdateDraw(func() {
+			tv.SetText(text).ScrollToEnd()
+		})
+	}()
+}
+
+// ─── update binary ─────────────────────────────────────────────────────
+
+const installOneLiner = "curl -fsSL https://raw.githubusercontent.com/mukswilly/npvtunnel-creator-server/main/install.sh | sh"
+
+// updateBinary re-runs the signed-release installer (which verifies checksum +
+// cosign before replacing the binary), then offers a restart to pick it up.
+func (c *console) updateBinary() {
+	c.confirm(
+		"Update the creator-server binary?\n\n"+
+			"This re-runs the official installer (verifies checksum + cosign\n"+
+			"signature, then replaces the binary). Your key + configs are untouched.\n"+
+			"You'll be offered a restart afterwards.",
+		func() {
+			go func() {
+				var runErr error
+				c.app.Suspend(func() {
+					cmd := exec.Command("sh", "-c", installOneLiner)
+					cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+					runErr = cmd.Run()
+				})
+				c.app.QueueUpdateDraw(func() {
+					if runErr != nil {
+						c.flashThen("Update failed:\n\n"+runErr.Error(), c.showServer)
+						return
+					}
+					c.confirm("Updated. Restart the service now to run the new binary?", func() {
+						c.serviceAction("restart")
+					})
+				})
+			}()
+		})
 }
 
 // ─── backup ────────────────────────────────────────────────────────────
