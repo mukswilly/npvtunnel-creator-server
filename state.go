@@ -74,8 +74,8 @@ type ConfigEntry struct {
 	//     "v2rayProfile": { ... } | null,
 	//     "sshConfig":    { ... } | null }
 	//
-	// Secret fields (v2rayProfile.password, sshConfig.sshPassword, etc.)
-	// hold the already-working config the recipient's app will use.
+	// The config's auth fields (v2rayProfile.password, sshConfig.sshPassword,
+	// etc.) are already-working values the recipient's app connects with.
 	//
 	// Required when this entry is registered for routing — load-time
 	// validation rejects entries with no Config.

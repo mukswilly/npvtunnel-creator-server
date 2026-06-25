@@ -49,7 +49,7 @@ sits beside them and only handles *distributing the config that points at them*:
    └────────┬─────────┘
             │  each time the user's app connects, it asks this server for the
             └─ config, which you authored in configs.json and which already
-               carries the working secrets your VPN server accepts.
+               works against your VPN server.
 ```
 
 So:
@@ -335,10 +335,10 @@ attestation tokens, no IPs, no secrets** — device IDs are salted-hashed
 ### The VPN-server contract
 
 This server doesn't run your tunnel and has no access to your data plane. It
-hands out the static config you wrote in `configs.json`, **verbatim**, including
-whatever secret your VPN server already accepts (a VLESS UUID, an SSH
-password, etc.). Provisioning that secret on your v2ray/SSH server, and
-rotating it when you need to, is your job and is intentionally out of scope here.
+hands out the static config you wrote in `configs.json`, **verbatim** — the
+same config that already works against your VPN server. Keeping that config
+working (authoring it, and replacing it in `configs.json` when your server
+changes) is your job; this server only distributes it, gated by your policy.
 
 What this server adds on top of just posting the config publicly: the handout is
 gated by your attestation / rate-limit policy, and every response carries a
