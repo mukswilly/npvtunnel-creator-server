@@ -53,8 +53,6 @@ func runMintSubcommand(args []string) int {
 		"optional policy.displayMessage shown to the recipient at import time")
 	customServerMessage := fs.String("custom-server-message", "",
 		"optional policy.customServerMessage")
-	attestationLevel := fs.String("attestation-level", "NONE",
-		"policy.attestationLevel: NONE | DEVICE_INTEGRITY | STRICT_PLAY_STORE")
 	onlyMobile := fs.Bool("only-mobile-network", false,
 		"policy.onlyMobileNetwork (recipient app warns / refuses when on Wi-Fi)")
 	outFile := fs.String("out", "",
@@ -151,10 +149,15 @@ func runMintSubcommand(args []string) int {
 		return 1
 	}
 
-	// Build policy.
+	// Build policy. attestationLevel is always NONE: the envelope's signed
+	// policy field is NOT the attestation gate — the runtime AttestationPolicy
+	// on the configs.json entry (evaluated server-side at /v1/issue) is. A
+	// recipient can't verify device attestation locally, so the app performs
+	// none and refuses any non-NONE level; stamping one here would only break
+	// import. Same reasoning as redeem.go, which mints with a nil (NONE) policy.
 	pol := envelopePolicy{
 		OnlyMobileNetwork:   *onlyMobile,
-		AttestationLevel:    *attestationLevel,
+		AttestationLevel:    "NONE",
 		ExpiresAt:           ptrOrNil(*expiresAtStr),
 		DisplayMessage:      *displayMessage,
 		CustomServerMessage: *customServerMessage,
