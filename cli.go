@@ -344,16 +344,16 @@ func runConfigAdd(args []string) int {
 	}
 
 	var body json.RawMessage
-	blockRooted := false
+	var rp registrationPolicy
 	switch {
 	case raw != "":
-		decoded, br, err := decodeConfigRegistration(raw)
+		decoded, p, err := decodeConfigRegistration(raw)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "config add:", err)
 			return 1
 		}
 		body = decoded
-		blockRooted = br
+		rp = p
 	case usingQuickBuild:
 		if *server == "" || *port == "" || *address == "" {
 			fmt.Fprintln(os.Stderr,
@@ -395,17 +395,20 @@ func runConfigAdd(args []string) int {
 		return 1
 	}
 	entry := ConfigEntry{ConfigID: configID, Config: body}
-	if blockRooted {
+	if rp.blockRooted {
 		// The app's "block rooted devices" toggle → a strict issuance-time
 		// attestation gate, enforced server-side (the only place it can be).
 		entry.AttestationPolicy = strictDeviceAttestationPolicy()
 	}
+	// Use restrictions (mobile-only / expiry / messages) ride into every issued
+	// config so they apply to share-link recipients, just like a file export.
+	entry.IssuedPolicy = issuedPolicyFrom(rp)
 	list = append(list, entry)
 	if err := writeConfigEntries(configsPath, list); err != nil {
 		fmt.Fprintln(os.Stderr, "config add: write configs.json:", err)
 		return 1
 	}
-	if blockRooted {
+	if rp.blockRooted {
 		fmt.Fprintln(os.Stderr,
 			"config add: device attestation REQUIRED — only stock, non-rooted "+
 				"Android devices with verified boot will be issued this config.")
@@ -425,23 +428,36 @@ func runConfigAdd(args []string) int {
 // the server can tell it from a bare config body or hand-pasted raw JSON.
 const configRegistrationKind = "npv-config-registration"
 
+// registrationPolicy carries the creator's per-config choices from the app's
+// "Copy for creator-server" bundle: the device-attestation gate (blockRooted,
+// applied as an issuance-time AttestationPolicy) plus the use restrictions
+// (mobile-only / expiry / messages) the issuer stamps onto every config it hands
+// out, so share-link recipients enforce them exactly as a file recipient would.
+type registrationPolicy struct {
+	blockRooted         bool
+	onlyMobileNetwork   bool
+	expiresAt           string
+	displayMessage      string
+	customServerMessage string
+}
+
 // decodeConfigRegistration turns the string a creator pasted into the config
-// body the issuer stores plus the creator's device-attestation choice. Two
-// shapes are accepted:
+// body the issuer stores plus the creator's [registrationPolicy]. Two shapes:
 //
 //   - the app's "Copy for creator-server" bundle —
-//     {"kind":"npv-config-registration","config":{…},"blockRooted":bool} —
-//     returns the inner config body and blockRooted;
+//     {"kind":"npv-config-registration","config":{…},"blockRooted":bool, …} —
+//     returns the inner config body and the chosen policy;
 //   - a bare config body (raw JSON object, or base64url of one) — the
-//     hand-pasted / pre-bundle shape — returns it as-is with blockRooted=false.
+//     hand-pasted / pre-bundle shape — returns it as-is with a zero policy.
 //
-// The body is what the issuer stores and returns to recipients verbatim;
-// blockRooted is applied by the caller as an issuance-time AttestationPolicy and
-// is never stored in the body. The creator never has to know the field layout.
-func decodeConfigRegistration(s string) (json.RawMessage, bool, error) {
+// The body is what the issuer stores and returns to recipients verbatim; the
+// policy is applied by the caller (never stored in the body). The creator never
+// has to know the field layout.
+func decodeConfigRegistration(s string) (json.RawMessage, registrationPolicy, error) {
+	var zero registrationPolicy
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return nil, false, fmt.Errorf("empty config string")
+		return nil, zero, fmt.Errorf("empty config string")
 	}
 	var candidate []byte
 	if strings.HasPrefix(s, "{") {
@@ -449,16 +465,16 @@ func decodeConfigRegistration(s string) (json.RawMessage, bool, error) {
 	} else {
 		dec, err := b64url.DecodeString(s)
 		if err != nil {
-			return nil, false, fmt.Errorf("config string is neither JSON (starts with '{') nor base64url: %w", err)
+			return nil, zero, fmt.Errorf("config string is neither JSON (starts with '{') nor base64url: %w", err)
 		}
 		candidate = dec
 	}
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(candidate, &probe); err != nil {
-		return nil, false, fmt.Errorf("config string did not decode to a JSON object: %w", err)
+		return nil, zero, fmt.Errorf("config string did not decode to a JSON object: %w", err)
 	}
 	if len(probe) == 0 {
-		return nil, false, fmt.Errorf("config decoded to an empty object")
+		return nil, zero, fmt.Errorf("config decoded to an empty object")
 	}
 
 	// Registration bundle? Keyed off "kind" — unambiguous against a bare body.
@@ -467,26 +483,50 @@ func decodeConfigRegistration(s string) (json.RawMessage, bool, error) {
 		if json.Unmarshal(kindRaw, &kind) == nil && kind == configRegistrationKind {
 			bodyRaw, ok := probe["config"]
 			if !ok || len(bodyRaw) == 0 {
-				return nil, false, fmt.Errorf("registration bundle is missing its \"config\" body")
+				return nil, zero, fmt.Errorf("registration bundle is missing its \"config\" body")
 			}
-			blockRooted := false
-			if br, ok := probe["blockRooted"]; ok {
-				_ = json.Unmarshal(br, &blockRooted)
+			var rp registrationPolicy
+			into := func(key string, dst any) {
+				if v, ok := probe[key]; ok {
+					_ = json.Unmarshal(v, dst)
+				}
 			}
+			into("blockRooted", &rp.blockRooted)
+			into("onlyMobileNetwork", &rp.onlyMobileNetwork)
+			into("expiresAt", &rp.expiresAt)
+			into("displayMessage", &rp.displayMessage)
+			into("customServerMessage", &rp.customServerMessage)
 			body, err := compactJSONObject(bodyRaw)
 			if err != nil {
-				return nil, false, err
+				return nil, zero, err
 			}
-			return body, blockRooted, nil
+			return body, rp, nil
 		}
 	}
 
 	// Bare config body.
 	body, err := compactJSONObject(candidate)
 	if err != nil {
-		return nil, false, err
+		return nil, zero, err
 	}
-	return body, false, nil
+	return body, zero, nil
+}
+
+// issuedPolicyFrom builds the per-config envelope policy the issuer stamps on
+// every config it hands out (so mobile-only / expiry / messages reach share-link
+// recipients), or nil when the creator set no restriction. attestationLevel
+// stays NONE — device attestation is the separate server-side AttestationPolicy.
+func issuedPolicyFrom(rp registrationPolicy) *envelopePolicy {
+	if !rp.onlyMobileNetwork && rp.expiresAt == "" && rp.displayMessage == "" && rp.customServerMessage == "" {
+		return nil
+	}
+	return &envelopePolicy{
+		OnlyMobileNetwork:   rp.onlyMobileNetwork,
+		AttestationLevel:    "NONE",
+		ExpiresAt:           ptrOrNil(rp.expiresAt),
+		DisplayMessage:      rp.displayMessage,
+		CustomServerMessage: rp.customServerMessage,
+	}
 }
 
 // compactJSONObject asserts raw is a non-empty JSON object and returns it

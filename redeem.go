@@ -204,10 +204,12 @@ func (s *Server) handleRedeem(w http.ResponseWriter, r *http.Request) {
 		RecipientPubKeys: [][]byte{recipientPub},
 		IssuerURL:        s.state.PublicIssuerURL,
 		ConfigID:         configID,
-		// Policy is intentionally nil → mint with defaults. A token
-		// pre-records the configId; the runtime AttestationPolicy on
-		// the configs.json entry is what gates issuance, not the
-		// envelope's signed policy field.
+		// Carry the creator's use restrictions (mobile-only / expiry / messages)
+		// into the envelope so share-link recipients enforce them like a file
+		// recipient. attestationLevel stays NONE (the client can't verify it);
+		// device attestation is gated separately by the runtime AttestationPolicy
+		// on the configs.json entry at /v1/issue.
+		Policy: cfgEntry.IssuedPolicy,
 	})
 	if err != nil {
 		writeRedeemError(w, http.StatusBadRequest, "bad_pubkey",

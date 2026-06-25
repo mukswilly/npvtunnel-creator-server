@@ -87,6 +87,14 @@ type ConfigEntry struct {
 	// field keeps working unchanged.
 	AttestationPolicy *AttestationPolicy `json:"attestationPolicy,omitempty"`
 
+	// IssuedPolicy is the use-restriction policy (mobile-only / expiry / display
+	// messages) the issuer stamps onto every config minted for this entry, so a
+	// share-link recipient enforces the same restrictions a file recipient would.
+	// Set from the app's "Copy for creator-server" bundle. Nil = no restriction
+	// (mint uses NONE defaults). attestationLevel within it is always NONE —
+	// device attestation is the separate AttestationPolicy above.
+	IssuedPolicy *envelopePolicy `json:"issuedPolicy,omitempty"`
+
 	// ConfigTtlSec is the issuance TTL in seconds — the recipient re-fetch
 	// cadence carried in IssueResponse.expiresAt. The issuer does not run
 	// the data plane, so this is a recipient refresh interval, not a server-

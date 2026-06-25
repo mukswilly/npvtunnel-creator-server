@@ -11,7 +11,7 @@ func TestConsoleConfigReplaceRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newConsole: %v", err)
 	}
-	id, err := c.appendConfig(json.RawMessage(`{"name":"a","type":"V2RAY","v2rayProfile":{"password":"old"}}`), false)
+	id, err := c.appendConfig(json.RawMessage(`{"name":"a","type":"V2RAY","v2rayProfile":{"password":"old"}}`), registrationPolicy{})
 	if err != nil {
 		t.Fatalf("appendConfig: %v", err)
 	}
@@ -49,13 +49,14 @@ func TestConsoleConfigReplaceRemove(t *testing.T) {
 func TestDecodeConfigRegistration(t *testing.T) {
 	// App "Copy for creator-server" bundle: the inner body and blockRooted are
 	// split out; the wrapper fields never reach the stored body.
-	bundle := `{"kind":"npv-config-registration","v":1,"config":{"name":"a","type":"V2RAY"},"blockRooted":true}`
-	body, blockRooted, err := decodeConfigRegistration(bundle)
+	bundle := `{"kind":"npv-config-registration","v":1,"config":{"name":"a","type":"V2RAY"},` +
+		`"blockRooted":true,"onlyMobileNetwork":true,"expiresAt":"2030-01-01T00:00:00Z","displayMessage":"hi"}`
+	body, rp, err := decodeConfigRegistration(bundle)
 	if err != nil {
 		t.Fatalf("bundle: %v", err)
 	}
-	if !blockRooted {
-		t.Error("bundle: expected blockRooted=true")
+	if !rp.blockRooted || !rp.onlyMobileNetwork || rp.expiresAt != "2030-01-01T00:00:00Z" || rp.displayMessage != "hi" {
+		t.Errorf("bundle policy not parsed: %+v", rp)
 	}
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
@@ -67,19 +68,23 @@ func TestDecodeConfigRegistration(t *testing.T) {
 	if _, ok := m["kind"]; ok {
 		t.Error("bundle body must not carry the registration wrapper fields")
 	}
-
-	// base64url of the same bundle decodes identically.
-	if _, br, err := decodeConfigRegistration(b64url.EncodeToString([]byte(bundle))); err != nil || !br {
-		t.Errorf("base64 bundle: blockRooted=%v err=%v", br, err)
+	// The use restrictions become an envelope policy the issuer stamps on issued configs.
+	if ip := issuedPolicyFrom(rp); ip == nil || !ip.OnlyMobileNetwork || ip.ExpiresAt == nil {
+		t.Errorf("issuedPolicyFrom dropped restrictions: %+v", ip)
 	}
 
-	// A bare config body (no wrapper) → body as-is, blockRooted=false.
-	body2, br2, err := decodeConfigRegistration(`{"type":"SSH","sshConfig":{"sshHost":"h"}}`)
+	// base64url of the same bundle decodes identically.
+	if _, rp2, err := decodeConfigRegistration(b64url.EncodeToString([]byte(bundle))); err != nil || !rp2.blockRooted {
+		t.Errorf("base64 bundle: blockRooted=%v err=%v", rp2.blockRooted, err)
+	}
+
+	// A bare config body (no wrapper) → body as-is, zero policy.
+	body2, rp3, err := decodeConfigRegistration(`{"type":"SSH","sshConfig":{"sshHost":"h"}}`)
 	if err != nil {
 		t.Fatalf("bare: %v", err)
 	}
-	if br2 {
-		t.Error("bare body must default blockRooted=false")
+	if rp3.blockRooted || issuedPolicyFrom(rp3) != nil {
+		t.Error("bare body must default to a zero policy")
 	}
 	json.Unmarshal(body2, &m)
 	if m["type"] != "SSH" {

@@ -250,18 +250,18 @@ func (c *console) showAddConfig() {
 	form := tview.NewForm()
 	form.AddInputField("Config string", "", 0, nil, func(t string) { configStr = t })
 	form.AddButton("Register", func() {
-		body, blockRooted, err := decodeConfigRegistration(configStr)
+		body, rp, err := decodeConfigRegistration(configStr)
 		if err != nil {
 			c.flash("That doesn't look like a config string:\n\n" + err.Error())
 			return
 		}
-		id, err := c.appendConfig(body, blockRooted)
+		id, err := c.appendConfig(body, rp)
 		if err != nil {
 			c.flash("Couldn't save:\n\n" + err.Error())
 			return
 		}
 		msg := "Registered.\n\nconfigId:\n" + id + "\n\nMint a share link for it from the main menu."
-		if blockRooted {
+		if rp.blockRooted {
 			msg += "\n\nDevice attestation is REQUIRED: only stock, non-rooted Android\n" +
 				"devices (verified boot) will receive it."
 		}
@@ -281,7 +281,7 @@ func (c *console) showAddConfig() {
 	c.switchTo("addconfig", "Register a config", footerKeys(""), body)
 }
 
-func (c *console) appendConfig(body json.RawMessage, blockRooted bool) (string, error) {
+func (c *console) appendConfig(body json.RawMessage, rp registrationPolicy) (string, error) {
 	idBytes := make([]byte, envelopeConfigIDLen)
 	if _, err := rand.Read(idBytes); err != nil {
 		return "", err
@@ -293,10 +293,11 @@ func (c *console) appendConfig(body json.RawMessage, blockRooted bool) (string, 
 		return "", err
 	}
 	entry := ConfigEntry{ConfigID: id, Config: body}
-	if blockRooted {
+	if rp.blockRooted {
 		// App "block rooted devices" toggle → strict server-side issuance gate.
 		entry.AttestationPolicy = strictDeviceAttestationPolicy()
 	}
+	entry.IssuedPolicy = issuedPolicyFrom(rp)
 	list = append(list, entry)
 	if err := writeConfigEntries(path, list); err != nil {
 		return "", err
