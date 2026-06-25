@@ -208,7 +208,7 @@ func TestConsoleBuilds(t *testing.T) {
 	c.showBackup()
 
 	// With a registered config, the configs table + per-config screens build.
-	id, err := c.appendConfig([]byte(`{"name":"x","type":"V2RAY","v2rayProfile":{"password":"p"}}`))
+	id, err := c.appendConfig([]byte(`{"name":"x","type":"V2RAY","v2rayProfile":{"password":"p"}}`), false)
 	if err != nil {
 		t.Fatalf("appendConfig: %v", err)
 	}

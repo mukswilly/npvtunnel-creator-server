@@ -344,14 +344,16 @@ func runConfigAdd(args []string) int {
 	}
 
 	var body json.RawMessage
+	blockRooted := false
 	switch {
 	case raw != "":
-		decoded, err := decodeConfigString(raw)
+		decoded, br, err := decodeConfigRegistration(raw)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "config add:", err)
 			return 1
 		}
 		body = decoded
+		blockRooted = br
 	case usingQuickBuild:
 		if *server == "" || *port == "" || *address == "" {
 			fmt.Fprintln(os.Stderr,
@@ -392,10 +394,21 @@ func runConfigAdd(args []string) int {
 		fmt.Fprintln(os.Stderr, "config add:", err)
 		return 1
 	}
-	list = append(list, ConfigEntry{ConfigID: configID, Config: body})
+	entry := ConfigEntry{ConfigID: configID, Config: body}
+	if blockRooted {
+		// The app's "block rooted devices" toggle → a strict issuance-time
+		// attestation gate, enforced server-side (the only place it can be).
+		entry.AttestationPolicy = strictDeviceAttestationPolicy()
+	}
+	list = append(list, entry)
 	if err := writeConfigEntries(configsPath, list); err != nil {
 		fmt.Fprintln(os.Stderr, "config add: write configs.json:", err)
 		return 1
+	}
+	if blockRooted {
+		fmt.Fprintln(os.Stderr,
+			"config add: device attestation REQUIRED — only stock, non-rooted "+
+				"Android devices with verified boot will be issued this config.")
 	}
 
 	fmt.Printf("configId %s\n", configID)
@@ -408,14 +421,27 @@ func runConfigAdd(args []string) int {
 	return 0
 }
 
-// decodeConfigString turns the string a creator pasted — the config their
-// app exported, either base64url of the config body or the raw config JSON
-// — into the config-body JSON the issuer stores and returns verbatim. The
-// creator never has to know the config's field layout; the app produced it.
-func decodeConfigString(s string) (json.RawMessage, error) {
+// configRegistrationKind marks the app's "Copy for creator-server" bundle so
+// the server can tell it from a bare config body or hand-pasted raw JSON.
+const configRegistrationKind = "npv-config-registration"
+
+// decodeConfigRegistration turns the string a creator pasted into the config
+// body the issuer stores plus the creator's device-attestation choice. Two
+// shapes are accepted:
+//
+//   - the app's "Copy for creator-server" bundle —
+//     {"kind":"npv-config-registration","config":{…},"blockRooted":bool} —
+//     returns the inner config body and blockRooted;
+//   - a bare config body (raw JSON object, or base64url of one) — the
+//     hand-pasted / pre-bundle shape — returns it as-is with blockRooted=false.
+//
+// The body is what the issuer stores and returns to recipients verbatim;
+// blockRooted is applied by the caller as an issuance-time AttestationPolicy and
+// is never stored in the body. The creator never has to know the field layout.
+func decodeConfigRegistration(s string) (json.RawMessage, bool, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return nil, fmt.Errorf("empty config string")
+		return nil, false, fmt.Errorf("empty config string")
 	}
 	var candidate []byte
 	if strings.HasPrefix(s, "{") {
@@ -423,25 +449,68 @@ func decodeConfigString(s string) (json.RawMessage, error) {
 	} else {
 		dec, err := b64url.DecodeString(s)
 		if err != nil {
-			return nil, fmt.Errorf("config string is neither JSON (starts with '{') nor base64url: %w", err)
+			return nil, false, fmt.Errorf("config string is neither JSON (starts with '{') nor base64url: %w", err)
 		}
 		candidate = dec
 	}
-	// Must be a non-empty JSON object. Decode values as RawMessage so nested
-	// numbers/strings aren't reformatted or lose precision.
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(candidate, &probe); err != nil {
-		return nil, fmt.Errorf("config string did not decode to a JSON object: %w", err)
+		return nil, false, fmt.Errorf("config string did not decode to a JSON object: %w", err)
 	}
 	if len(probe) == 0 {
-		return nil, fmt.Errorf("config decoded to an empty object")
+		return nil, false, fmt.Errorf("config decoded to an empty object")
 	}
-	// Compact (preserves exact tokens) for stable on-disk storage.
+
+	// Registration bundle? Keyed off "kind" — unambiguous against a bare body.
+	if kindRaw, ok := probe["kind"]; ok {
+		var kind string
+		if json.Unmarshal(kindRaw, &kind) == nil && kind == configRegistrationKind {
+			bodyRaw, ok := probe["config"]
+			if !ok || len(bodyRaw) == 0 {
+				return nil, false, fmt.Errorf("registration bundle is missing its \"config\" body")
+			}
+			blockRooted := false
+			if br, ok := probe["blockRooted"]; ok {
+				_ = json.Unmarshal(br, &blockRooted)
+			}
+			body, err := compactJSONObject(bodyRaw)
+			if err != nil {
+				return nil, false, err
+			}
+			return body, blockRooted, nil
+		}
+	}
+
+	// Bare config body.
+	body, err := compactJSONObject(candidate)
+	if err != nil {
+		return nil, false, err
+	}
+	return body, false, nil
+}
+
+// compactJSONObject asserts raw is a non-empty JSON object and returns it
+// compacted (exact tokens preserved) for stable on-disk storage.
+func compactJSONObject(raw json.RawMessage) (json.RawMessage, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, fmt.Errorf("config body did not decode to a JSON object: %w", err)
+	}
+	if len(probe) == 0 {
+		return nil, fmt.Errorf("config body decoded to an empty object")
+	}
 	var buf bytes.Buffer
-	if err := json.Compact(&buf, candidate); err != nil {
+	if err := json.Compact(&buf, raw); err != nil {
 		return nil, fmt.Errorf("compact config JSON: %w", err)
 	}
 	return json.RawMessage(buf.Bytes()), nil
+}
+
+// decodeConfigString is the body-only form, for callers that take no
+// attestation choice (e.g. Replace, which keeps the config's existing policy).
+func decodeConfigString(s string) (json.RawMessage, error) {
+	body, _, err := decodeConfigRegistration(s)
+	return body, err
 }
 
 // ─── token ls / revoke ────────────────────────────────────────────────

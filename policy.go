@@ -274,3 +274,20 @@ func resolveIssuanceLimit(policy *AttestationPolicy) int {
 	}
 	return defaultMaxIssuancesPerHour
 }
+
+// strictDeviceAttestationPolicy is the AttestationPolicy the app's "block rooted
+// devices" toggle maps to: refuse issuance to any device that isn't a stock,
+// OEM-locked phone presenting a hardware-attested key, chained to a Google AKA
+// root, with verified boot. This is the configuration that actually blocks
+// rooted / emulated / modified devices (see docs threat-model §3.4e) — the only
+// place that check can be truly enforced. Android only; Apple App Attest needs a
+// per-config appId and is configured separately.
+func strictDeviceAttestationPolicy() *AttestationPolicy {
+	return &AttestationPolicy{
+		Mode:                  AttestationModeStrict,
+		Verifier:              "android-key-attestation",
+		RequireHardwareBacked: true,
+		RequireTrustedRoot:    true,
+		RequireVerifiedBoot:   true,
+	}
+}
