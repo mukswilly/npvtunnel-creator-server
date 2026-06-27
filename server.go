@@ -10,24 +10,16 @@ import (
 	"time"
 )
 
-// Server is the HTTP API surface. State is held in [State]; this type is
-// stateless other than the logger reference.
+// Server holds the HTTP handlers' shared dependencies and a concurrency gate.
 type Server struct {
 	state  *State
 	logger *slog.Logger
-	// inFlight bounds concurrently-served requests. A buffered channel
-	// acts as a semaphore: a full channel means the server is at capacity
-	// and sheds load with 503 rather than letting goroutines / file
-	// descriptors grow without bound under a flood. Sized once at
-	// construction (maxInFlightRequests).
+
 	inFlight chan struct{}
 }
 
-// maxInFlightRequests caps concurrently-served requests. Generous for a
-// single small VPS serving one creator's audience (issue calls are cached
-// client-side to roughly once per config TTL), tight enough that a
-// flood can't exhaust goroutines or file descriptors. /healthz bypasses
-// the limit so a liveness probe still succeeds while the server sheds load.
+// maxInFlightRequests caps concurrent non-health requests; excess requests get
+// 503 rather than piling up unbounded.
 const maxInFlightRequests = 256
 
 func NewServer(state *State, logger *slog.Logger) *Server {
@@ -38,7 +30,7 @@ func NewServer(state *State, logger *slog.Logger) *Server {
 	}
 }
 
-// Router returns the http.Handler for the public endpoints.
+// Router wires the HTTP routes and wraps them in the in-flight limiter.
 func (s *Server) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/issue", s.handleIssue)
@@ -48,9 +40,9 @@ func (s *Server) Router() http.Handler {
 	return s.limitInFlight(mux)
 }
 
-// limitInFlight is the concurrency-limiting middleware (see
-// maxInFlightRequests). /healthz bypasses it so liveness checks aren't
-// starved when the server is saturated.
+// limitInFlight admits at most maxInFlightRequests concurrent requests via a
+// buffered-channel semaphore, returning 503 with Retry-After when full. /healthz
+// is exempt so liveness checks succeed even under load.
 func (s *Server) limitInFlight(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
@@ -71,9 +63,8 @@ func (s *Server) limitInFlight(next http.Handler) http.Handler {
 	})
 }
 
-// handleCreatorPubKey exposes the server's signing pubkey for test/dev. In
-// production the recipient pins this value from the discovery envelope and
-// doesn't need to hit this endpoint.
+// handleCreatorPubKey returns this issuer's creator public key so callers can
+// pin it out of band.
 func (s *Server) handleCreatorPubKey(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"creatorPubkey": s.state.CreatorPubKeyCompressedB64(),
@@ -85,22 +76,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-// handleIssue implements POST /v1/issue.
-//
-// Flow:
-//
-//  1. Parse + validate request shape; verify ECDSA over the canonical
-//     signing input against req.DevicePk.
-//  2. Look up the ConfigEntry by req.ConfigID (404 if unknown).
-//  3. Apply per-(device, config) rate limit.
-//  4. Evaluate attestation policy; reject / shorten TTL as configured.
-//  5. base64url-no-pad the routed entry's static ConfigBody → ConfigB64.
-//  6. Sign the receipt (covers devicePk, requestNonce, expiresAt, ConfigB64).
-//  7. Emit the audit record and return 200 with IssueResponse.
+// handleIssue serves POST /v1/issue: a device requests the config registered
+// under req.ConfigID. The flow is: pick up any live config edits, parse and
+// validate the request, verify its signature, resolve the config and its
+// policy, enforce the per-device+config rate limit, evaluate attestation, then
+// return the config payload with a signed receipt.
 func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
-	// Hot-reload configs.json if it changed since last load, so editing it
-	// takes effect without a restart. A bad edit keeps the last-good
-	// registry live (logged, not fatal).
+
 	if err := s.state.ReloadConfigsIfChanged(); err != nil {
 		s.logger.Warn("configs.json reload failed", "err", err.Error())
 	}
@@ -135,28 +117,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Replay note: req.RequestNonce is NOT tracked server-side, and the
-	// signing input carries no timestamp, so a captured signed request is
-	// replayable indefinitely. The nonce's only job is to bind the
-	// RECEIPT to this specific request (see issueReceiptSigningInput) — it
-	// is not a server-side anti-replay store. This is acceptable because a
-	// replayed request only ever returns the same config already addressed
-	// to req.DevicePk; a party that isn't that device gains nothing from
-	// re-fetching it, and volume is capped by the per-(device,config) rate
-	// limit below. Genuine request-replay resistance would need a signed
-	// issuedAt + acceptance window — a breaking wire change requiring a
-	// coordinated rollout, deliberately not done here.
-
-	// Look up the registered config. If a config registry is loaded but the
-	// requested fp is not in it, return 404. If no registry is loaded
-	// (configs.json absent / ephemeral mode), fall back to a stub
-	// ConfigBody so the wire-protocol harness keeps working without a
-	// registry.
 	var configJson json.RawMessage
 	var attestationPolicy *AttestationPolicy
-	// Baseline config lifetime. Per-config override from the entry
-	// (resolveConfigTtl) when a registry is loaded; defaultConfigTtl in the
-	// no-registry stub path below.
+
 	baseTtl := defaultConfigTtl
 	if s.state.HasConfigRegistry() {
 		entry := s.state.ConfigByID(req.ConfigID)
@@ -169,22 +132,12 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		configJson = entry.Config
 		baseTtl = resolveConfigTtl(entry)
 	} else {
-		// Stub ConfigBody for ephemeral / no-registry mode. Carries no
-		// config secret — the wire-protocol harness checks shape + signing,
-		// not the contents.
+		// No registry configured: hand back a placeholder so the protocol path
+		// still works for development and smoke tests.
 		configJson = json.RawMessage(
 			`{"name":"stub","address":"stub.creator-server.example:443","type":"V2RAY","v2rayProfile":{"server":"stub.creator-server.example","serverPort":"443"}}`)
 	}
 
-	// Always-on per-(device, config) issuance rate limit. This is the
-	// baseline anti-abuse gate and it does NOT depend on any attestation
-	// policy — a default deployment is throttled out of the box. The key
-	// is (devicePk, configId): independent quotas per config so a device
-	// can't dodge the cap by spreading requests across a creator's
-	// configs, and keyed on the DEVICE key rather than the source IP so
-	// users sharing one carrier / CGNAT address (common in censored
-	// regions) are not collectively throttled. An attestation policy may
-	// raise the cap; absent one, defaultIssuanceLimitPerHour applies.
 	limit := defaultIssuanceLimitPerHour
 	if pl := resolveIssuanceLimit(attestationPolicy); pl > 0 {
 		limit = pl
@@ -219,21 +172,13 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Apply the creator's attestation policy. Modes: strict rejects
-	// unattested; soft shortens TTL; observe logs only; off is a no-op.
-	// When the policy names a Verifier, its Verdict
-	// supersedes the claimed-only check.
-	// Resolve the named verifier from the registry. An unknown name
-	// would have failed at configs.json load time, so by this point
-	// either we have a real verifier or the policy didn't ask for one.
 	var verifier AttestationVerifier
 	if attestationPolicy != nil && attestationPolicy.Verifier != "" {
 		var err error
 		verifier, err = s.state.verifierRegistry.Lookup(attestationPolicy.Verifier)
 		if err != nil {
-			// Defensive: should be unreachable thanks to load-time
-			// validation. If we somehow get here, fail closed rather
-			// than silently degrading to no-verifier behavior.
+			// A policy naming a verifier the registry can't resolve is a
+			// misconfiguration, not a client error.
 			writeIssueError(w, http.StatusInternalServerError, "server_error",
 				"resolve verifier: "+err.Error())
 			return
@@ -282,16 +227,8 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// TTL comes from the attestation-policy decision: the per-config
-	// baseline (resolveConfigTtl) in most modes; shorter under "soft" +
-	// unattested. Since the issuer doesn't run the data plane, this is a
-	// recipient re-fetch cadence carried in expiresAt, not a server-side
-	// config expiry.
 	expiresAt := time.Now().UTC().Add(decision.ttl).Format(time.RFC3339)
 
-	// The routed entry's ConfigBody already holds the operator's static,
-	// already-working config. Return it verbatim — no per-request
-	// config derivation or substitution.
 	resp := IssueResponse{
 		ConfigB64: b64url.EncodeToString(configJson),
 		ExpiresAt: expiresAt,
@@ -314,13 +251,11 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// writeIssueError emits an IssueError with the chosen HTTP status.
 func writeIssueError(w http.ResponseWriter, status int, code, detail string) {
 	writeJSON(w, status, IssueError{Error: code, Detail: detail})
 }
 
-// shortBase64 truncates for log readability. Pubkeys/nonces are not secret —
-// this is purely a cosmetic shortener so log lines don't wrap.
+// shortBase64 abbreviates a long identifier for logs, keeping the head and tail.
 func shortBase64(s string) string {
 	if len(s) <= 12 {
 		return s
@@ -328,9 +263,8 @@ func shortBase64(s string) string {
 	return s[:8] + "…" + s[len(s)-4:]
 }
 
-// writeJSON serializes v as JSON, falling back to a 500 on encoding error.
-// Suppresses the io.ErrClosedPipe / context.Canceled cases that occur when
-// the client disconnected mid-write — those aren't server bugs.
+// writeJSON writes v as a JSON response with the given status. A write error
+// after the header is committed is unrecoverable and intentionally dropped.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	buf, err := json.Marshal(v)
 	if err != nil {
@@ -340,7 +274,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	if _, err := w.Write(buf); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-		// Logged at the caller level — keep this branch quiet to avoid
-		// noise from clients that hang up early.
+
 	}
 }

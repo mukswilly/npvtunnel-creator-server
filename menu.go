@@ -16,34 +16,34 @@ import (
 	"github.com/rivo/tview"
 )
 
-// menu.go is the interactive, full-screen management console —
-// `creator-server menu` (and bare `creator-server` on a terminal). It's an
-// app-like front end over the same state the flag subcommands use: register a
-// config, list configs, mint and burn share links, check status, back up. The
-// long-running issuer is a separate process (systemd); this is the creator's
-// console for driving it.
-
+// defaultConsoleStateDir is the state directory used when none is given on the
+// command line: the location of the signing key, configs, and tokens.
 const defaultConsoleStateDir = "/var/lib/creator-server"
 
-// consoleSettings persists the small bits the console remembers between runs,
-// so the creator doesn't retype them. Lives in <state-dir>/console.json.
+// consoleSettings is the console's persisted preferences, stored as
+// console.json in the state directory.
 type consoleSettings struct {
-	RedemptionURL string      `json:"redemptionUrl,omitempty"`
-	Deployment    *deployment `json:"deployment,omitempty"`
+	// RedemptionURL is the last redemption endpoint entered when minting a
+	// share link; remembered so it can prefill the mint form.
+	RedemptionURL string `json:"redemptionUrl,omitempty"`
+	// Deployment records the domain/TLS choices made during setup, used to
+	// derive deploy options without re-reading the service unit.
+	Deployment *deployment `json:"deployment,omitempty"`
 }
 
-// deployment records the server setup the console configured (or adopted), so
-// it knows the domain/TLS without re-prompting and can derive issuer/redeem
-// URLs. SetupComplete is the primary first-run signal (corroborated by unit
-// presence on the adopt path).
+// deployment holds the deployment-relevant fields the console remembers after
+// setup so it can report status and build a redemption URL.
 type deployment struct {
 	SetupComplete bool   `json:"setupComplete"`
 	Domain        string `json:"domain,omitempty"`
-	TLSMode       string `json:"tlsMode,omitempty"` // "builtin" | "proxy"
+	TLSMode       string `json:"tlsMode,omitempty"`
 	Addr          string `json:"addr,omitempty"`
 	AcmeEmail     string `json:"acmeEmail,omitempty"`
 }
 
+// console is the interactive terminal UI: it wraps the tview application,
+// owns the page stack used for screen navigation, and holds the state store
+// plus the helpers used to inspect and control the running service.
 type console struct {
 	app      *tview.Application
 	pages    *tview.Pages
@@ -51,18 +51,20 @@ type console struct {
 	state    *State
 	settings consoleSettings
 
-	// Server-management seams — real implementations in production, fakes in
-	// tests (so screens render without root, systemd, or the network).
-	svc       serviceController
-	health    healthChecker
-	port      portChecker
-	cert      certInspector
-	canManage bool // may we run the privileged service verbs (root or sudo -n)?
+	// svc, health, port, and cert are injected so screens can query service,
+	// health, listening-port, and certificate status (and be faked in tests).
+	svc    serviceController
+	health healthChecker
+	port   portChecker
+	cert   certInspector
+	// canManage reports whether this process can start/stop the service;
+	// service-control buttons are hidden when it cannot.
+	canManage bool
 }
 
-// deploy resolves the current deployment: the persisted block first, else an
-// adopt from an already-installed unit (install.sh user), else an unconfigured
-// default. Always carries the console's own -state-dir.
+// deploy resolves the deployment options to use, preferring the settings
+// recorded at setup, then an already-installed service unit, and finally bare
+// defaults rooted at the state directory.
 func (c *console) deploy() DeployOpts {
 	if d := c.settings.Deployment; d != nil && (d.SetupComplete || d.Domain != "") {
 		return DeployOpts{
@@ -81,6 +83,8 @@ func (c *console) deploy() DeployOpts {
 	return DeployOpts{StateDir: c.stateDir}.withDefaults()
 }
 
+// loadConsoleSettings reads console.json from the state directory, returning
+// zero-value settings if the file is missing or unparseable.
 func loadConsoleSettings(stateDir string) consoleSettings {
 	var s consoleSettings
 	if data, err := os.ReadFile(filepath.Join(stateDir, "console.json")); err == nil {
@@ -89,14 +93,17 @@ func loadConsoleSettings(stateDir string) consoleSettings {
 	return s
 }
 
+// saveSettings writes the current settings to console.json with owner-only
+// permissions; write failures are ignored as preferences are non-critical.
 func (c *console) saveSettings() {
 	if data, err := json.MarshalIndent(c.settings, "", "  "); err == nil {
 		_ = os.WriteFile(filepath.Join(c.stateDir, "console.json"), data, 0o600)
 	}
 }
 
-// newConsole builds the console (loads/creates state, wires the main menu) but
-// does NOT start the event loop — so it can be exercised without a terminal.
+// newConsole opens the state directory, wires up the tview application and its
+// service/health helpers, installs the global key handler, and shows the main
+// menu. It returns an error only if the state store cannot be opened.
 func newConsole(stateDir string) (*console, error) {
 	state, err := NewStateWithDir(stateDir)
 	if err != nil {
@@ -114,6 +121,8 @@ func newConsole(stateDir string) (*console, error) {
 		cert:      autocertInspector{},
 		canManage: canManageSystemd(),
 	}
+	// Global key handling applied to every screen: F3 quits, and Esc dismisses
+	// an open modal or otherwise steps back to the main menu.
 	c.app.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		switch ev.Key() {
 		case tcell.KeyF3:
@@ -123,7 +132,7 @@ func newConsole(stateDir string) (*console, error) {
 			name, _ := c.pages.GetFrontPage()
 			switch {
 			case name == "modal":
-				c.pages.RemovePage("modal") // Esc cancels a dialog
+				c.pages.RemovePage("modal")
 				return nil
 			case name != "main" && name != "":
 				c.showMain()
@@ -137,7 +146,10 @@ func newConsole(stateDir string) (*console, error) {
 	return c, nil
 }
 
-// runMenuSubcommand handles `creator-server menu ...` — launches the console.
+// runMenuSubcommand parses the menu flags, opens the console, runs any
+// first-launch setup or adoption flow, surfaces a one-time welcome when the
+// signing key was just created, and then runs the UI loop. It returns a
+// process exit code.
 func runMenuSubcommand(args []string) int {
 	fs := flag.NewFlagSet("menu", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -152,9 +164,9 @@ func runMenuSubcommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "      pass -state-dir <dir> to choose where state lives.")
 		return 1
 	}
-	// Route by setup state: a brand-new box gets the wizard; an install.sh user
-	// (unit but no console.json) is adopted onto the Server screen; an
-	// already-configured box goes straight to the menu.
+
+	// On launch, adopt an already-installed unit straight to the server screen,
+	// or run the setup wizard on a fresh box.
 	state := c.detectSetupState()
 	switch state {
 	case setupAdopt:
@@ -163,8 +175,9 @@ func runMenuSubcommand(args []string) int {
 	case setupFirstRun:
 		c.showSetupWizard()
 	}
-	// The wizard gates on backup itself; on the other paths, nudge if this run
-	// just generated the signing key.
+
+	// When the key was generated on this open (and we aren't already in the
+	// wizard), show a one-time prompt urging the operator to back it up.
 	if state != setupFirstRun && c.state.KeyWasCreated() {
 		c.flash(fmt.Sprintf(
 			"Welcome — your creator identity was just created.\n\n"+
@@ -174,6 +187,7 @@ func runMenuSubcommand(args []string) int {
 			filepath.Join(c.stateDir, "creator-key.pem")))
 	}
 	c.app.EnableMouse(true)
+	// Run blocks until the application is stopped (F3 or the Sign off item).
 	if err := c.app.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "menu:", err)
 		return 1
@@ -181,8 +195,8 @@ func runMenuSubcommand(args []string) int {
 	return 0
 }
 
-// ─── chrome ────────────────────────────────────────────────────────────
-
+// footerKeys builds the footer hint string shown on every screen, always
+// listing F3=Exit and Esc=Back plus any screen-specific extra hints.
 func footerKeys(extra string) string {
 	base := " [yellow::b]F3[-:-:-]=Exit  [yellow::b]Esc[-:-:-]=Back"
 	if extra != "" {
@@ -191,6 +205,8 @@ func footerKeys(extra string) string {
 	return base
 }
 
+// frame wraps a body primitive in the standard screen chrome: a header showing
+// the title and state directory, and a footer of key hints.
 func (c *console) frame(title, keys string, body tview.Primitive) tview.Primitive {
 	header := tview.NewTextView().SetDynamicColors(true)
 	header.SetText(fmt.Sprintf(" [aqua::b]creator-server[-:-:-]   [white::b]%s[-:-:-]   [gray]%s", title, c.stateDir))
@@ -202,10 +218,14 @@ func (c *console) frame(title, keys string, body tview.Primitive) tview.Primitiv
 		AddItem(footer, 1, 0, false)
 }
 
+// switchTo frames body and makes it the visible page under the given name,
+// replacing any existing page with that name.
 func (c *console) switchTo(name, title, keys string, body tview.Primitive) {
 	c.pages.AddAndSwitchToPage(name, c.frame(title, keys, body), true)
 }
 
+// modal overlays a button dialog on the current screen and invokes done with
+// the chosen button's index and label after removing the dialog.
 func (c *console) modal(msg string, buttons []string, done func(int, string)) {
 	m := tview.NewModal().SetText(msg).AddButtons(buttons).
 		SetDoneFunc(func(i int, label string) {
@@ -215,10 +235,15 @@ func (c *console) modal(msg string, buttons []string, done func(int, string)) {
 	c.pages.AddPage("modal", m, true, true)
 }
 
+// flash shows a single-OK message dialog.
 func (c *console) flash(msg string) { c.modal(msg, []string{"OK"}, func(int, string) {}) }
+
+// flashThen shows a single-OK message dialog and runs then once dismissed.
 func (c *console) flashThen(msg string, then func()) {
 	c.modal(msg, []string{"OK"}, func(int, string) { then() })
 }
+
+// confirm shows a Yes/No dialog and runs yes only when Yes is chosen.
 func (c *console) confirm(msg string, yes func()) {
 	c.modal(msg, []string{"Yes", "No"}, func(_ int, label string) {
 		if label == "Yes" {
@@ -227,8 +252,8 @@ func (c *console) confirm(msg string, yes func()) {
 	})
 }
 
-// ─── main menu ─────────────────────────────────────────────────────────
-
+// showMain renders the top-level menu whose entries navigate to the config,
+// minting, token, server, and backup screens.
 func (c *console) showMain() {
 	list := tview.NewList().ShowSecondaryText(true)
 	list.SetSecondaryTextColor(tcell.ColorGray)
@@ -243,8 +268,9 @@ func (c *console) showMain() {
 	c.switchTo("main", "Main menu", footerKeys("[yellow::b]Up/Dn[-:-:-]=Move  [yellow::b]Enter[-:-:-]=Select"), list)
 }
 
-// ─── register a config ─────────────────────────────────────────────────
-
+// showAddConfig renders the form that takes a pasted config string, decodes
+// and stores it, and reports the resulting configId (noting when device
+// attestation will be required).
 func (c *console) showAddConfig() {
 	var configStr string
 	form := tview.NewForm()
@@ -281,6 +307,9 @@ func (c *console) showAddConfig() {
 	c.switchTo("addconfig", "Register a config", footerKeys(""), body)
 }
 
+// appendConfig generates a random configId, applies the registration policy
+// (attaching a strict device-attestation policy and any issued-config policy),
+// appends the entry to configs.json, and returns the new id.
 func (c *console) appendConfig(body json.RawMessage, rp registrationPolicy) (string, error) {
 	idBytes := make([]byte, envelopeConfigIDLen)
 	if _, err := rand.Read(idBytes); err != nil {
@@ -294,7 +323,8 @@ func (c *console) appendConfig(body json.RawMessage, rp registrationPolicy) (str
 	}
 	entry := ConfigEntry{ConfigID: id, Config: body}
 	if rp.blockRooted {
-		// App "block rooted devices" toggle → strict server-side issuance gate.
+		// Require verified, unmodified-device attestation before this config
+		// will be issued.
 		entry.AttestationPolicy = strictDeviceAttestationPolicy()
 	}
 	entry.IssuedPolicy = issuedPolicyFrom(rp)
@@ -305,8 +335,8 @@ func (c *console) appendConfig(body json.RawMessage, rp registrationPolicy) (str
 	return id, nil
 }
 
-// ─── configs table ─────────────────────────────────────────────────────
-
+// showConfigs renders the registered configs as a selectable table; choosing a
+// row opens the per-config actions screen.
 func (c *console) showConfigs() {
 	list, err := readConfigEntries(filepath.Join(c.stateDir, "configs.json"))
 	if err != nil {
@@ -336,8 +366,8 @@ func (c *console) showConfigs() {
 	c.switchTo("configs", "Configs", footerKeys("[yellow::b]Enter[-:-:-]=Actions"), table)
 }
 
-// ─── mint a share link ─────────────────────────────────────────────────
-
+// showMint renders the form for minting a redeemable share link for a chosen
+// config. prefillID, when non-empty, preselects that config in the dropdown.
 func (c *console) showMint(prefillID string) {
 	configs, err := readConfigEntries(filepath.Join(c.stateDir, "configs.json"))
 	if err != nil {
@@ -357,9 +387,11 @@ func (c *console) showMint(prefillID string) {
 		}
 	}
 	selectedID := configs[initial].ConfigID
+	// Prefill the redemption URL from the last value used, falling back to the
+	// endpoint derived from the deployment settings.
 	redemptionURL := c.settings.RedemptionURL
 	if redemptionURL == "" {
-		redemptionURL = c.deploy().RedeemURL() // derive https://<domain>/v1/redeem
+		redemptionURL = c.deploy().RedeemURL()
 	}
 	redemptions := "100"
 	expiresIn := "168h"
@@ -381,6 +413,7 @@ func (c *console) showMint(prefillID string) {
 			c.flash("Couldn't mint:\n\n" + err.Error())
 			return
 		}
+		// Remember the redemption URL for next time before reporting the link.
 		c.settings.RedemptionURL = strings.TrimSpace(redemptionURL)
 		c.saveSettings()
 		c.flashThen("Share link minted — post this in your channel:\n\n"+link, c.showMain)
@@ -390,6 +423,9 @@ func (c *console) showMint(prefillID string) {
 	c.switchTo("mint", "Mint a share link", footerKeys(""), form)
 }
 
+// mintShareLink validates the form inputs (HTTPS redemption URL, positive
+// redemption count, optional duration), converts a duration into an absolute
+// RFC 3339 expiry, and returns the minted join link.
 func (c *console) mintShareLink(configID, redemptionURL, redemptionsStr, expiresIn, label string) (string, error) {
 	if redemptionURL == "" {
 		return "", fmt.Errorf("redemption URL is required\n(e.g. https://issuer.example/v1/redeem)")
@@ -418,8 +454,8 @@ func (c *console) mintShareLink(configID, redemptionURL, redemptionsStr, expires
 	return link, nil
 }
 
-// ─── share links (tokens) table ────────────────────────────────────────
-
+// showTokens renders the redemption tokens as a color-coded table (by live,
+// expiring, expired, or exhausted status); selecting a row offers to burn it.
 func (c *console) showTokens() {
 	tokens, err := loadRedemptionTokensFile(filepath.Join(c.stateDir, "redemption-tokens.json"))
 	if err != nil {
@@ -474,8 +510,9 @@ func (c *console) showTokens() {
 	c.switchTo("tokens", "Share links", footerKeys("[yellow::b]Enter[-:-:-]=Burn link"), table)
 }
 
-// ─── server lifecycle ──────────────────────────────────────────────────
-
+// showServer renders the server status screen: a lifecycle snapshot (service,
+// health, TLS), the operator's public key and key-file location, registry
+// counts, and the available service-control buttons.
 func (c *console) showServer() {
 	o := c.deploy()
 	acmeCacheDir := filepath.Join(c.stateDir, "acme")
@@ -484,6 +521,7 @@ func (c *console) showServer() {
 	configs, _ := readConfigEntries(filepath.Join(c.stateDir, "configs.json"))
 	tokens, _ := loadRedemptionTokensFile(filepath.Join(c.stateDir, "redemption-tokens.json"))
 	now := time.Now().UTC()
+	// Count tokens still usable (live or soon-to-expire) for the registry line.
 	live := 0
 	for _, t := range tokens {
 		if _, code := tokenStatus(*t, now); code == statusLive || code == statusExpiring {
@@ -510,6 +548,8 @@ func (c *console) showServer() {
 	tv := tview.NewTextView().SetDynamicColors(true).SetText(b.String())
 
 	form := tview.NewForm()
+	// Service-control buttons appear only with privilege; their set depends on
+	// whether the service is currently running.
 	if c.canManage {
 		if snap.Svc.Running() {
 			form.AddButton("Restart", func() { c.serviceAction("restart") })
@@ -530,10 +570,9 @@ func (c *console) showServer() {
 	c.switchTo("server", "Server", footerKeys("[yellow::b]Tab[-:-:-]=Buttons"), body)
 }
 
-// serviceAction runs a privileged systemd verb (start/stop/restart) and
-// refreshes the Server screen. It shells `sudo creator-server service <verb>`
-// from a goroutine via app.Suspend so sudo's prompt (if any) gets the real TTY
-// — never run a privileged shell-out from inside the tview event loop.
+// serviceAction runs a service verb (start/stop/restart) on a background
+// goroutine, then re-renders the server screen via QueueUpdateDraw so the UI is
+// touched only from the draw loop, reporting any failure.
 func (c *console) serviceAction(verb string) {
 	go func() {
 		err := c.runServiceVerb(verb)
@@ -547,20 +586,16 @@ func (c *console) serviceAction(verb string) {
 	}()
 }
 
-// runServiceVerb executes `creator-server service <verb>` with privilege: as
-// root directly, otherwise via sudo (the install.sh sudoers drop-in makes that
-// passwordless for this subcommand). app.Suspend hands over the terminal so any
-// sudo prompt + systemctl output is visible, then the app resumes.
+// runServiceVerb suspends the tview UI while the external service command runs
+// so it can use the real terminal (e.g. for a sudo password prompt).
 func (c *console) runServiceVerb(verb string, extraArgs ...string) error {
 	var err error
 	c.app.Suspend(func() { err = execServiceVerb(verb, extraArgs) })
 	return err
 }
 
-// execServiceVerb runs `creator-server service <verb>` with privilege (root
-// directly, else via sudo). The caller hands over the terminal (app.Suspend);
-// this just runs the command, so the setup wizard can chain install + enable in
-// a single terminal handover.
+// execServiceVerb runs this binary's "service <verb>" subcommand, wiring it to
+// the current standard streams.
 func execServiceVerb(verb string, extraArgs []string) error {
 	name, args := serviceVerbCommand(os.Geteuid(), selfBinPath(), verb, extraArgs)
 	cmd := exec.Command(name, args...)
@@ -568,9 +603,8 @@ func execServiceVerb(verb string, extraArgs []string) error {
 	return cmd.Run()
 }
 
-// serviceVerbCommand builds the (program, args) for a privileged service verb.
-// Pure, so the root-vs-sudo decision and arg shape are unit-tested without
-// running anything.
+// serviceVerbCommand builds the command and arguments to run a service verb,
+// invoking the binary directly when already root and otherwise via sudo.
 func serviceVerbCommand(euid int, selfPath, verb string, extraArgs []string) (string, []string) {
 	base := append([]string{"service", verb}, extraArgs...)
 	if euid == 0 {
@@ -579,9 +613,8 @@ func serviceVerbCommand(euid int, selfPath, verb string, extraArgs []string) (st
 	return "sudo", append([]string{selfPath}, base...)
 }
 
-// selfBinPath returns the path to invoke for privileged re-exec. Prefer the
-// canonical install path (which the sudoers drop-in authorizes); fall back to
-// the running executable.
+// selfBinPath returns the path used to re-invoke this binary, preferring the
+// installed location, then the running executable, then the default.
 func selfBinPath() string {
 	if _, err := os.Stat(defaultBinPath); err == nil {
 		return defaultBinPath
@@ -592,8 +625,8 @@ func selfBinPath() string {
 	return defaultBinPath
 }
 
-// ─── server logs ───────────────────────────────────────────────────────
-
+// showLogs renders a scrollable log viewer, binding the 'r' key to reload it,
+// and kicks off the initial load.
 func (c *console) showLogs() {
 	tv := tview.NewTextView().SetScrollable(true).SetWrap(false)
 	tv.SetText("Loading logs…")
@@ -608,8 +641,8 @@ func (c *console) showLogs() {
 	c.loadLogsInto(tv)
 }
 
-// loadLogsInto fetches the journal tail off the event loop (journalctl can
-// block on a slow disk) and writes it back via QueueUpdateDraw.
+// loadLogsInto fetches the recent log lines on a background goroutine and
+// writes the result into tv from the draw loop, scrolling to the newest line.
 func (c *console) loadLogsInto(tv *tview.TextView) {
 	go func() {
 		lines, err := c.svc.Logs(200)
@@ -629,12 +662,13 @@ func (c *console) loadLogsInto(tv *tview.TextView) {
 	}()
 }
 
-// ─── update binary ─────────────────────────────────────────────────────
-
+// installOneLiner is the shell command that fetches and runs the official
+// installer, used by the in-console binary update flow.
 const installOneLiner = "curl -fsSL https://raw.githubusercontent.com/mukswilly/npvtunnel-creator-server/main/install.sh | sh"
 
-// updateBinary re-runs the signed-release installer (which verifies checksum +
-// cosign before replacing the binary), then offers a restart to pick it up.
+// updateBinary confirms, then suspends the UI to run the installer in the
+// terminal; on success it offers to restart the service. The whole flow runs on
+// a background goroutine and updates the UI via QueueUpdateDraw.
 func (c *console) updateBinary() {
 	c.confirm(
 		"Update the creator-server binary?\n\n"+
@@ -662,8 +696,8 @@ func (c *console) updateBinary() {
 		})
 }
 
-// ─── backup ────────────────────────────────────────────────────────────
-
+// showBackup confirms, then writes a tarball of the state directory (key,
+// audit salt, configs, share links) and reports the file count and size.
 func (c *console) showBackup() {
 	out := filepath.Join(c.stateDir, "creator-server-state-backup.tar.gz")
 	c.confirm(
@@ -681,7 +715,7 @@ func (c *console) showBackup() {
 		})
 }
 
-// headerCell is a non-selectable bold yellow table header cell.
+// headerCell builds a bold, non-selectable yellow table header cell.
 func headerCell(text string) *tview.TableCell {
 	return tview.NewTableCell(text + "  ").
 		SetTextColor(tcell.ColorYellow).

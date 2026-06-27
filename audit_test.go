@@ -16,8 +16,8 @@ import (
 	"testing"
 )
 
-// TestAuditSaltPersistsAcrossReopen — like the HMAC key, the audit salt
-// has to survive restart so devicePk hashes stay correlatable over time.
+// The audit salt is generated once, written to disk, and reused on reopen so
+// hashes stay correlatable across restarts.
 func TestAuditSaltPersistsAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	first, err := NewStateWithDir(dir)
@@ -39,8 +39,7 @@ func TestAuditSaltPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
-// TestAuditSaltRejectsWrongSize — like the HMAC key, fail loudly on
-// corruption rather than silent regeneration.
+// A salt file of the wrong length is rejected rather than silently used.
 func TestAuditSaltRejectsWrongSize(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "audit-salt.bin"), make([]byte, 8), 0o600)
@@ -50,8 +49,7 @@ func TestAuditSaltRejectsWrongSize(t *testing.T) {
 	}
 }
 
-// TestHashDevicePkIsDeterministic — same input → same hash. Without
-// this property, a creator can't correlate events from one device.
+// The same salt and key always hash to the same value.
 func TestHashDevicePkIsDeterministic(t *testing.T) {
 	salt := make([]byte, 32)
 	rand.Read(salt)
@@ -64,9 +62,8 @@ func TestHashDevicePkIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestHashDevicePkDiffersAcrossSalts — logs from different
-// creator-servers should not cross-link. Same device under different
-// salts → different hashes.
+// The same key under different salts hashes differently, so logs from one
+// deployment can't be correlated against another.
 func TestHashDevicePkDiffersAcrossSalts(t *testing.T) {
 	saltA := make([]byte, 32)
 	saltB := make([]byte, 32)
@@ -81,8 +78,7 @@ func TestHashDevicePkDiffersAcrossSalts(t *testing.T) {
 	}
 }
 
-// TestHashDevicePkDiffersAcrossDevices — different inputs → different
-// hashes. (Birthday-bound, but for the input space we care about, fine.)
+// Distinct keys under one salt hash differently.
 func TestHashDevicePkDiffersAcrossDevices(t *testing.T) {
 	salt := make([]byte, 32)
 	rand.Read(salt)
@@ -93,14 +89,11 @@ func TestHashDevicePkDiffersAcrossDevices(t *testing.T) {
 	}
 }
 
-// TestHashDevicePkHandlesMalformedInput — defensive: if devicePkB64
-// fails to decode, we should still produce a stable hash rather than
-// crash or return empty.
+// A non-decodable key still yields a stable, non-empty hash rather than erroring.
 func TestHashDevicePkHandlesMalformedInput(t *testing.T) {
 	salt := make([]byte, 32)
 	rand.Read(salt)
 
-	// Invalid base64 input.
 	first := hashDevicePk(salt, "!!!not-base64!!!")
 	second := hashDevicePk(salt, "!!!not-base64!!!")
 	if first == "" {
@@ -111,9 +104,7 @@ func TestHashDevicePkHandlesMalformedInput(t *testing.T) {
 	}
 }
 
-// TestAuditEmitNeverLogsRawDevicePk — the load-bearing privacy property.
-// The audit log line for a granted issuance must NOT contain the raw
-// devicePk anywhere. Captures the actual slog output and greps it.
+// Audit logs record only the salted hash of the device key, never the raw key.
 func TestAuditEmitNeverLogsRawDevicePk(t *testing.T) {
 	dir := t.TempDir()
 	state, err := NewStateWithDir(dir)
@@ -121,7 +112,6 @@ func TestAuditEmitNeverLogsRawDevicePk(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 
-	// Capture slog output to a buffer so we can inspect what got logged.
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
 	srv := NewServer(state, logger)
@@ -141,19 +131,17 @@ func TestAuditEmitNeverLogsRawDevicePk(t *testing.T) {
 	if strings.Contains(logOutput, devPkB64) {
 		t.Fatalf("audit log contains raw devicePk %q:\n%s", devPkB64, logOutput)
 	}
-	// Sanity: the hashed form SHOULD be present.
+
 	expectedHash := hashDevicePk(state.AuditSalt, devPkB64)
 	if !strings.Contains(logOutput, expectedHash) {
 		t.Fatalf("audit log missing expected devicePkHash %q:\n%s", expectedHash, logOutput)
 	}
 }
 
-// TestAuditEmitContainsExpectedFields — the structured record has the
-// fields a creator needs to detect anomalies (event, hashed device,
-// configId, policy mode, claimed attestation, ttl).
+// A rejected issuance emits an audit record with the expected structured fields.
 func TestAuditEmitContainsExpectedFields(t *testing.T) {
 	dir := t.TempDir()
-	// Configure a strict policy so the rejected branch fires too.
+
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}},
@@ -175,7 +163,6 @@ func TestAuditEmitContainsExpectedFields(t *testing.T) {
 	defer httpResp.Body.Close()
 	io.ReadAll(httpResp.Body)
 
-	// One audit record should have been emitted (the strict-rejected one).
 	logOutput := logBuf.String()
 	for _, field := range []string{
 		`"event":"issue.attestation_rejected"`,
@@ -191,10 +178,8 @@ func TestAuditEmitContainsExpectedFields(t *testing.T) {
 	}
 }
 
-// TestAuditEmitNeverLogsAttestationToken — even when a request carries
-// a real attestation token (in observe mode), the token itself MUST NOT
-// appear in the log. tokenPresent is the boolean; the token itself is
-// server-side.
+// The raw attestation token is never logged; only a tokenPresent flag records
+// that one was supplied.
 func TestAuditEmitNeverLogsAttestationToken(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
@@ -217,6 +202,7 @@ func TestAuditEmitNeverLogsAttestationToken(t *testing.T) {
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
 	req.Attestation.Platform = "ANDROID"
 	req.Attestation.Token = sensitiveToken
+	// Re-sign after mutating the attestation, which is part of the signing input.
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
 	body, _ := json.Marshal(req)

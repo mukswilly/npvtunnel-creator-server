@@ -8,8 +8,7 @@ import (
 	"testing"
 )
 
-// randomRecipientB64 returns a fresh P-256 compressed pubkey as
-// base64url-no-pad — the shape `mint -recipient-pubkey` accepts.
+// randomRecipientB64 returns a fresh compressed P-256 public key, base64url-encoded.
 func randomRecipientB64(t *testing.T) string {
 	t.Helper()
 	p, err := ecdh.P256().GenerateKey(rand.Reader)
@@ -23,11 +22,8 @@ func randomRecipientB64(t *testing.T) string {
 	return b64url.EncodeToString(compressed)
 }
 
-// TestMintSubcommandCollectsRecipientsAcrossForms exercises the CLI
-// recipient-collection layer: a single -recipient-pubkey, a repeated
-// one, a comma-separated list in one flag, and a -recipient-pubkeys-file
-// all contribute, and duplicates are deduped. The minted envelope's
-// recipient count is the observable proof.
+// Recipients may arrive via repeated flags, comma-separated lists, and a file;
+// all forms are merged and duplicates collapsed to one envelope recipient each.
 func TestMintSubcommandCollectsRecipientsAcrossForms(t *testing.T) {
 	dir := t.TempDir()
 
@@ -36,20 +32,20 @@ func TestMintSubcommandCollectsRecipientsAcrossForms(t *testing.T) {
 	c := randomRecipientB64(t)
 	d := randomRecipientB64(t)
 
-	// d goes in via a file, one per line.
 	pubkeyFile := filepath.Join(dir, "recipients.txt")
 	if err := os.WriteFile(pubkeyFile, []byte(d+"\n"), 0o600); err != nil {
 		t.Fatalf("write recipients file: %v", err)
 	}
 
 	outFile := filepath.Join(dir, "out.npvs")
+	// a (twice) + b,c + d-from-file = four distinct recipients after dedup.
 	code := runMintSubcommand([]string{
 		"-state-dir", dir,
 		"-issuer-url", "https://issuer.test/v1/issue",
-		"-recipient-pubkey", a, // single flag
-		"-recipient-pubkey", b + "," + c, // comma list in one flag
-		"-recipient-pubkey", a, // exact duplicate of a — must dedup
-		"-recipient-pubkeys-file", pubkeyFile, // d from file
+		"-recipient-pubkey", a,
+		"-recipient-pubkey", b + "," + c,
+		"-recipient-pubkey", a,
+		"-recipient-pubkeys-file", pubkeyFile,
 		"-out", outFile,
 	})
 	if code != 0 {
@@ -64,7 +60,7 @@ func TestMintSubcommandCollectsRecipientsAcrossForms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode envelope: %v", err)
 	}
-	// a, b, c, d distinct → 4 recipients (the second `a` deduped away).
+
 	if len(dec.Header.Recipients) != 4 {
 		t.Fatalf("recipients = %d, want 4 (deduped)", len(dec.Header.Recipients))
 	}
@@ -77,8 +73,7 @@ func TestMintSubcommandCollectsRecipientsAcrossForms(t *testing.T) {
 	}
 }
 
-// TestMintSubcommandRequiresAtLeastOneRecipient — with no recipient flag
-// or file, the subcommand refuses rather than minting an empty envelope.
+// Minting with no recipients in any form exits non-zero.
 func TestMintSubcommandRequiresAtLeastOneRecipient(t *testing.T) {
 	dir := t.TempDir()
 	code := runMintSubcommand([]string{

@@ -16,9 +16,7 @@ import (
 	"testing"
 )
 
-// TestCreatorKeyPersistsAcrossStateReopen confirms the pubkey is stable
-// across NewStateWithDir calls in the same directory. If this breaks, every
-// recipient with a pinned creator pubkey breaks on each deploy.
+// Reopening the state dir loads the existing signing key rather than minting a new one.
 func TestCreatorKeyPersistsAcrossStateReopen(t *testing.T) {
 	dir := t.TempDir()
 
@@ -28,14 +26,11 @@ func TestCreatorKeyPersistsAcrossStateReopen(t *testing.T) {
 	}
 	firstPub := first.CreatorPubKeyCompressedB64()
 
-	// Verify the file actually got written.
 	keyPath := filepath.Join(dir, "creator-key.pem")
 	if _, err := os.Stat(keyPath); err != nil {
 		t.Fatalf("expected creator-key.pem at %s: %v", keyPath, err)
 	}
 
-	// Re-open the same directory — must load the existing key, not generate
-	// a new one.
 	second, err := NewStateWithDir(dir)
 	if err != nil {
 		t.Fatalf("second NewStateWithDir: %v", err)
@@ -45,9 +40,7 @@ func TestCreatorKeyPersistsAcrossStateReopen(t *testing.T) {
 	}
 }
 
-// TestCreatorKeyHasRestrictivePermissions verifies the private key file is
-// not world-readable. On Windows the perms model differs but the WriteFile
-// 0600 still keeps the file out of "everyone" ACLs.
+// The on-disk signing key is written with owner-only (0600-subset) permissions.
 func TestCreatorKeyHasRestrictivePermissions(t *testing.T) {
 	if isWindows() {
 		t.Skip("Unix perm bits don't apply on Windows; ACL check is out of scope")
@@ -66,8 +59,7 @@ func TestCreatorKeyHasRestrictivePermissions(t *testing.T) {
 	}
 }
 
-// TestCreatorKeyRejectsCorruptFile fails fast on a corrupt PEM rather than
-// silently regenerating (which would break recipients without warning).
+// An unparseable key file is a hard error, not silently replaced.
 func TestCreatorKeyRejectsCorruptFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "creator-key.pem"), []byte("not a PEM file"), 0o600); err != nil {
@@ -79,9 +71,7 @@ func TestCreatorKeyRejectsCorruptFile(t *testing.T) {
 	}
 }
 
-// TestConfigsFileMissingFallsBackToStub confirms that without a configs.json,
-// /v1/issue still returns a valid signed response (stub ConfigBody) — the
-// wire-protocol harness should not depend on a config registry being present.
+// With no configs.json, the registry is absent and issuing returns the built-in stub config.
 func TestConfigsFileMissingFallsBackToStub(t *testing.T) {
 	dir := t.TempDir()
 	state, err := NewStateWithDir(dir)
@@ -102,9 +92,7 @@ func TestConfigsFileMissingFallsBackToStub(t *testing.T) {
 	}
 }
 
-// TestConfigsFileRoutesByConfigID confirms that when a config registry is
-// loaded, /v1/issue returns the registered entry's Config — and that two
-// entries route to two different configs.
+// Each configId in the registry routes to its own config payload, returned verbatim.
 func TestConfigsFileRoutesByConfigID(t *testing.T) {
 	dir := t.TempDir()
 
@@ -152,7 +140,6 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
-	// fp-A: V2RAY routing.
 	cfgA := decodeIssueResponseConfig(t, mustIssueRaw(t, ts, "AAAAAAAAAAAAAAAAAAAAAA"))
 	if cfgA["type"] != "V2RAY" {
 		t.Fatalf("fp-A type = %v, want V2RAY", cfgA["type"])
@@ -168,9 +155,6 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 		t.Fatalf("fp-A config not returned verbatim, got %v", profileA["password"])
 	}
 
-	// fp-B: SSH routing — completely different protocol, same code path.
-	// This is the test that proves the protocol-agnostic design unlocked the "every protocol
-	// just works" property.
 	cfgB := decodeIssueResponseConfig(t, mustIssueRaw(t, ts, "EBAQEBAQEBAQEBAQEBAQEA"))
 	if cfgB["type"] != "SSH" {
 		t.Fatalf("fp-B type = %v, want SSH", cfgB["type"])
@@ -184,9 +168,7 @@ func TestConfigsFileRoutesByConfigID(t *testing.T) {
 	}
 }
 
-// TestConfigsFileUnknownFpReturns404 confirms that a recipient asking for
-// a fp the issuer doesn't know about gets a clean error rather than the
-// stub config.
+// A request for a configId not in the registry yields 404 config_not_found.
 func TestConfigsFileUnknownFpReturns404(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{
@@ -202,7 +184,6 @@ func TestConfigsFileUnknownFpReturns404(t *testing.T) {
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
-	// Sign a request for fp-Unknown.
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "fp-Unknown")
 	body, _ := json.Marshal(req)
@@ -221,8 +202,7 @@ func TestConfigsFileUnknownFpReturns404(t *testing.T) {
 	}
 }
 
-// TestConfigsFileRejectsDuplicateFp guards against an operator footgun:
-// two entries with the same fp would cause non-deterministic routing.
+// Two entries sharing a configId make the registry fail to load.
 func TestConfigsFileRejectsDuplicateFp(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{
@@ -238,10 +218,7 @@ func TestConfigsFileRejectsDuplicateFp(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// helpers
-// ──────────────────────────────────────────────────────────────────
-
+// newTestServerWithState spins up an httptest server backed by the given state and a discarded logger.
 func newTestServerWithState(t *testing.T, state *State) *httptest.Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -249,6 +226,7 @@ func newTestServerWithState(t *testing.T, state *State) *httptest.Server {
 	return httptest.NewServer(srv.Router())
 }
 
+// writeConfigs marshals entries to the state dir's configs.json fixture.
 func writeConfigs(t *testing.T, dir string, entries []ConfigEntry) {
 	t.Helper()
 	data, err := json.MarshalIndent(entries, "", "  ")
@@ -260,8 +238,8 @@ func writeConfigs(t *testing.T, dir string, entries []ConfigEntry) {
 	}
 }
 
-// buildSignedIssueRequest creates a properly-signed IssueRequest for the
-// given configId. Used across all /v1/issue test paths.
+// buildSignedIssueRequest assembles an issue request for the given device key and configId,
+// signed over the canonical signing input.
 func buildSignedIssueRequest(t *testing.T, devPriv *ecdsa.PrivateKey, configID string) IssueRequest {
 	t.Helper()
 	devPkB64 := compressP256ToB64(t, &devPriv.PublicKey)
@@ -278,8 +256,7 @@ func buildSignedIssueRequest(t *testing.T, devPriv *ecdsa.PrivateKey, configID s
 	return req
 }
 
-// mustIssueRaw POSTs a signed request for configId and returns the raw
-// response body. Fails on non-200.
+// mustIssueRaw POSTs a freshly signed issue request and returns the raw 200 response body.
 func mustIssueRaw(t *testing.T, ts *httptest.Server, configID string) []byte {
 	t.Helper()
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -297,6 +274,7 @@ func mustIssueRaw(t *testing.T, ts *httptest.Server, configID string) []byte {
 	return respBytes
 }
 
+// isWindows reports whether the host uses Windows path separators.
 func isWindows() bool {
 	return os.PathSeparator == '\\'
 }

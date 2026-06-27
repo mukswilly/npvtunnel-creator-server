@@ -1,7 +1,12 @@
-// creator-server: HTTPS reference implementation of the NpvTunnel
-// issuance + share-link redemption protocol.
+// Command creator-server is a config-distribution server: it signs and hands
+// out VPN configuration payloads over an HTTP API and via redeemable
+// share-link tokens.
 //
-// Run with -addr / -cert / -key flags; see README.md for ops notes.
+// Run with no subcommand to start the issuer server (POST /v1/issue, POST
+// /v1/redeem). On a terminal with no arguments it instead opens the interactive
+// console. The subcommands cover setup, config/token management, status,
+// backup, and one-off minting; run with -h for server flags or "help" for the
+// subcommand list.
 package main
 
 import (
@@ -25,10 +30,8 @@ import (
 
 const letsEncryptStagingURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
-// parseTrustedProxies parses a comma-separated list of CIDRs into
-// []*net.IPNet. A bare IP (no "/prefix") is accepted as a single-host
-// CIDR. Returns an error naming the offending entry so an operator typo
-// fails loudly at startup rather than silently disabling proxy trust.
+// parseTrustedProxies parses a comma-separated list of IPs/CIDRs into networks.
+// Bare IPs are promoted to /32 (IPv4) or /128 (IPv6) host routes.
 func parseTrustedProxies(csv string) ([]*net.IPNet, error) {
 	var out []*net.IPNet
 	for _, raw := range strings.Split(csv, ",") {
@@ -37,7 +40,7 @@ func parseTrustedProxies(csv string) ([]*net.IPNet, error) {
 			continue
 		}
 		if !strings.Contains(entry, "/") {
-			// Bare IP → /32 (v4) or /128 (v6).
+
 			if ip := net.ParseIP(entry); ip != nil {
 				if ip.To4() != nil {
 					entry += "/32"
@@ -55,8 +58,8 @@ func parseTrustedProxies(csv string) ([]*net.IPNet, error) {
 	return out, nil
 }
 
-// flagWasSet reports whether the named flag was explicitly passed on the
-// command line (vs. left at its default).
+// flagWasSet reports whether the named flag was explicitly passed (as opposed
+// to left at its default).
 func flagWasSet(name string) bool {
 	set := false
 	flag.Visit(func(f *flag.Flag) {
@@ -67,9 +70,7 @@ func flagWasSet(name string) bool {
 	return set
 }
 
-// isLoopbackBind reports whether addr binds only the loopback interface
-// (so the only possible peer is a local reverse proxy). A bare ":port"
-// (all interfaces) returns false.
+// isLoopbackBind reports whether addr binds to localhost.
 func isLoopbackBind(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -85,15 +86,13 @@ func isLoopbackBind(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// loopbackCIDRs returns the IPv4 + IPv6 loopback ranges as the trusted-
-// proxy set for a loopback bind.
 func loopbackCIDRs() []*net.IPNet {
 	nets, _ := parseTrustedProxies("127.0.0.1/32,::1/128")
 	return nets
 }
 
-// csvHasDefaultRoute reports whether a -trusted-proxy CSV contains a
-// default route, which would let any client spoof X-Forwarded-For.
+// csvHasDefaultRoute reports whether the list contains a default route, which
+// would let any peer be treated as a trusted proxy.
 func csvHasDefaultRoute(csv string) bool {
 	for _, raw := range strings.Split(csv, ",") {
 		switch strings.TrimSpace(raw) {
@@ -105,16 +104,12 @@ func csvHasDefaultRoute(csv string) bool {
 }
 
 func main() {
-	// Bare `creator-server` on an interactive terminal opens the management
-	// console. With any args/flags — or no TTY, e.g. under systemd — it runs
-	// the issuer server, so existing units + ops scripts are unaffected.
+
+	// Bare invocation on a terminal launches the interactive console.
 	if len(os.Args) == 1 && stdinIsTTY() {
 		os.Exit(runMenuSubcommand(nil))
 	}
 
-	// Subcommand dispatch. The default (no subcommand) preserves the
-	// existing flag-based server entrypoint, so existing systemd units
-	// + ops scripts keep working unchanged.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "menu", "console", "tui":
@@ -140,12 +135,10 @@ func main() {
 		case "version", "-v", "--version":
 			os.Exit(runVersionSubcommand())
 		case "help", "-h", "--help":
-			// Fall through to flag-parsing below, which prints usage
-			// when -h is encountered.
+			// Fall through to flag.Parse so -h prints the server usage.
 		default:
-			// If it doesn't look like a flag (no leading dash) we
-			// treat it as an unknown subcommand. Anything starting
-			// with - keeps falling through to the legacy flag parser.
+			// A non-flag first argument is an unknown subcommand; anything
+			// starting with "-" is treated as a server flag.
 			if !strings.HasPrefix(os.Args[1], "-") {
 				fmt.Fprintf(os.Stderr,
 					"creator-server: unknown subcommand %q\n"+
@@ -211,17 +204,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// -domain turns on built-in automatic HTTPS. Validate it and derive
-	// the bind address + public issuer URL so the operator only has to
-	// supply the hostname.
 	if *domain != "" && strings.ContainsAny(*domain, "/: ") {
 		logger.Error("-domain must be a bare hostname (no scheme, port, or path)", "got", *domain)
 		os.Exit(2)
 	}
 	effectiveAddr := *addr
 	if *domain != "" && !flagWasSet("addr") {
-		// Default the bind from :8443 (reverse-proxy mode) to :443 when we
-		// terminate TLS ourselves. An explicit -addr still wins.
+		// With -domain, default the bind to the HTTPS port.
 		effectiveAddr = ":443"
 	}
 	if *publicIssuerURL == "" && *domain != "" {
@@ -252,12 +241,8 @@ func main() {
 				"rate limit. List only your actual proxy's address.")
 		}
 	} else if *domain == "" && isLoopbackBind(effectiveAddr) {
-		// Standard "binary on loopback behind a reverse proxy" deploy: the
-		// only peer is the local proxy, so trusting its X-Forwarded-For is
-		// safe and removes the most common rate-limit footgun (every client
-		// collapsing onto the proxy's IP). A public bind — including the
-		// built-in-TLS path — leaves X-Forwarded-For ignored so a direct
-		// client cannot spoof its rate-limit key.
+		// Bound to localhost without an explicit proxy list: a local reverse
+		// proxy is the only possible peer, so trust its forwarded addresses.
 		state.TrustedProxies = loopbackCIDRs()
 		logger.Info("bound to loopback; trusting X-Forwarded-For from localhost proxies",
 			"cidrs", "127.0.0.1/32,::1/128")
@@ -287,26 +272,16 @@ func main() {
 		Addr:              effectiveAddr,
 		Handler:           srv.Router(),
 		ReadHeaderTimeout: 10 * time.Second,
-		// ReadTimeout / WriteTimeout bound a single slow client. Request
-		// bodies are already size-capped (io.LimitReader in the
-		// handlers); these cap the TIME a client may take to trickle one
-		// in or read a response, closing the slow-body resource-
-		// exhaustion vector that ReadHeaderTimeout alone doesn't. 30s is
-		// generous for a mobile client on a degraded censored-region
-		// link while still bounding a deliberate slowloris.
+
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Graceful shutdown on SIGINT / SIGTERM.
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Periodically evict inactive rate-limiter entries. Without this the
-	// per-devicePk and per-IP maps grow for the life of the process (an
-	// attacker minting fresh keypairs or rotating source IPs can drive
-	// unbounded growth). The sweep window matches the 1h limiter window.
+	// Periodically evict idle rate-limiter buckets so memory stays bounded.
 	sweepTicker := time.NewTicker(10 * time.Minute)
 	defer sweepTicker.Stop()
 	go func() {
@@ -320,8 +295,8 @@ func main() {
 		}
 	}()
 
-	// Configure the serving mode before launching so graceful shutdown can
-	// see the ACME challenge listener (when one exists).
+	// With -domain, run an autocert manager: HTTPS on the main listener and an
+	// HTTP-01 challenge responder on :80 for issuance and renewal.
 	var challengeSrv *http.Server
 	if *domain != "" {
 		cacheDir := *acmeCacheDir
@@ -346,8 +321,7 @@ func main() {
 			m.Client = &acme.Client{DirectoryURL: letsEncryptStagingURL}
 		}
 		httpSrv.TLSConfig = m.TLSConfig()
-		// :80 serves ACME HTTP-01 challenges and redirects all other
-		// plain-HTTP traffic to HTTPS. Let's Encrypt cannot issue without it.
+
 		challengeSrv = &http.Server{
 			Addr:              ":80",
 			Handler:           m.HTTPHandler(nil),
@@ -360,13 +334,15 @@ func main() {
 		}()
 	}
 
+	// Pick the listener mode: built-in HTTPS (-domain), supplied cert/key
+	// (-cert/-key), or plain HTTP (development only).
 	go func() {
 		var err error
 		switch {
 		case *domain != "":
 			logger.Info("listening (built-in HTTPS via Let's Encrypt)",
 				"addr", httpSrv.Addr, "domain", *domain, "acmeStaging", *acmeStaging)
-			err = httpSrv.ListenAndServeTLS("", "") // certificate comes from autocert
+			err = httpSrv.ListenAndServeTLS("", "")
 		case *certFile != "":
 			if *keyFile == "" {
 				logger.Error("-cert provided without -key")

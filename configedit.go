@@ -11,16 +11,9 @@ import (
 	"github.com/rivo/tview"
 )
 
-// configedit.go adds the day-2 operations on a registered config: replace it
-// (when your server changed), remove it, and the two handout paths (share link
-// for a channel, file for one device). A creator only ever deals in whole
-// configs — the strings the app exports — so every operation here takes or
-// produces a config, never a field inside one. All of it edits
-// state-dir/configs.json through the same readConfigEntries / writeConfigEntries
-// used by `config add`; the running server hot-reloads it, so no restart.
-
-// ─── per-config action hub ─────────────────────────────────────────────
-
+// showConfigActions lists the actions available for a single registered config:
+// make a share link, make a file for one device, replace the config body, or
+// remove it.
 func (c *console) showConfigActions(id string) {
 	list := tview.NewList().ShowSecondaryText(true)
 	list.SetSecondaryTextColor(tcell.ColorGray)
@@ -32,8 +25,8 @@ func (c *console) showConfigActions(id string) {
 	c.switchTo("configactions", "Config "+shortBase64(id), footerKeys("[yellow::b]Enter[-:-:-]=Select"), list)
 }
 
-// ─── replace a config ──────────────────────────────────────────────────
-
+// showReplaceConfig swaps a config's body in place, keeping the same configId so
+// existing share links and handout files keep resolving.
 func (c *console) showReplaceConfig(id string) {
 	var configStr string
 	form := tview.NewForm()
@@ -70,8 +63,8 @@ func (c *console) showReplaceConfig(id string) {
 	c.switchTo("replace", "Replace config", footerKeys(""), body)
 }
 
-// ─── remove ────────────────────────────────────────────────────────────
-
+// confirmRemoveConfig asks for confirmation before removing a config from the
+// registry.
 func (c *console) confirmRemoveConfig(id string) {
 	c.confirm(fmt.Sprintf(
 		"Remove config %s?\n\n"+
@@ -88,8 +81,8 @@ func (c *console) confirmRemoveConfig(id string) {
 		})
 }
 
-// ─── file for one device (.npvs) ───────────────────────────────────────
-
+// showDirectMint mints a .npvs file for one recipient whose device public key
+// the operator already has. The config dropdown is prefilled to prefillID.
 func (c *console) showDirectMint(prefillID string) {
 	configs, err := readConfigEntries(filepath.Join(c.stateDir, "configs.json"))
 	if err != nil {
@@ -146,9 +139,10 @@ func (c *console) showDirectMint(prefillID string) {
 	c.switchTo("directmint", "File for one device", footerKeys(""), body)
 }
 
-// mintDirect validates the inputs and produces a per-recipient .npvs file,
-// reusing the same mintIssuerEnvelope core the `mint` subcommand wraps. Returns
-// the saved file path and the base64 (for pasting).
+// mintDirect mints a v2-issuer envelope wrapped to a single recipient device
+// key, writes it to a .npvs file in the state dir, and also returns the envelope
+// base64url-encoded for pasting. The configId must be a valid 16-byte routing
+// key already present in the registry.
 func (c *console) mintDirect(configID, issuerURL, pubkeyB64 string) (path, b64 string, err error) {
 	if issuerURL == "" {
 		return "", "", fmt.Errorf("issuer URL is required\n(set up your server first, or type https://host/v1/issue)")
@@ -185,8 +179,8 @@ func (c *console) mintDirect(configID, issuerURL, pubkeyB64 string) (path, b64 s
 	return out, b64url.EncodeToString(res.EnvelopeBytes), nil
 }
 
-// handoutFilename builds a per-(config,recipient) .npvs path under the state
-// dir. base64url is filename-safe (only -, _, alnum), so short prefixes are fine.
+// handoutFilename builds a stable .npvs filename in the state dir from short
+// prefixes of the configId and recipient key.
 func handoutFilename(stateDir, configID, pubkeyB64 string) string {
 	short := func(s string) string {
 		if len(s) > 8 {
@@ -197,11 +191,8 @@ func handoutFilename(stateDir, configID, pubkeyB64 string) string {
 	return filepath.Join(stateDir, "handout-"+short(configID)+"-"+short(pubkeyB64)+".npvs")
 }
 
-// ─── configs.json mutation helpers ─────────────────────────────────────
-
-// updateConfigBody swaps the matching entry's config body (keeping its
-// configId, so existing share links + handout files still resolve) and writes
-// the registry back.
+// updateConfigBody applies fn to the body of the config with the given id and
+// writes the registry back.
 func (c *console) updateConfigBody(id string, fn func(json.RawMessage) (json.RawMessage, error)) error {
 	path := filepath.Join(c.stateDir, "configs.json")
 	list, err := readConfigEntries(path)
@@ -221,7 +212,7 @@ func (c *console) updateConfigBody(id string, fn func(json.RawMessage) (json.Raw
 	return fmt.Errorf("config %s not found in configs.json", shortBase64(id))
 }
 
-// removeConfig deletes the entry with the given configId from configs.json.
+// removeConfig drops the config with the given id from the registry file.
 func (c *console) removeConfig(id string) error {
 	path := filepath.Join(c.stateDir, "configs.json")
 	list, err := readConfigEntries(path)

@@ -9,10 +9,8 @@ import (
 	"testing"
 )
 
-// fakeController is a serviceController test double: it records the verbs it was
-// asked to run, captures the installed unit, and can be scripted with a status,
-// logs, or a per-verb error. Shared by service + screen tests so neither needs
-// root or a live systemd.
+// fakeController is an in-memory ServiceController that records calls and lets tests
+// inject status, logs, and per-verb failures without touching a real init system.
 type fakeController struct {
 	exists        bool
 	status        ServiceStatus
@@ -24,6 +22,7 @@ type fakeController struct {
 	failOn        map[string]error
 }
 
+// rec logs a verb invocation and returns any error configured for it via failOn.
 func (f *fakeController) rec(v string) error {
 	f.calls = append(f.calls, v)
 	if err, ok := f.failOn[v]; ok {
@@ -41,9 +40,7 @@ func (f *fakeController) Restart() error                 { return f.rec("restart
 func (f *fakeController) Status() (ServiceStatus, error) { return f.status, f.statusErr }
 func (f *fakeController) Logs(int) ([]string, error)     { return f.logs, f.logsErr }
 
-// The hardening directives every rendered unit must carry, regardless of TLS
-// mode. These are the stricter committed-unit set the installer used to omit;
-// the golden test guards against silent drift if someone edits renderUnitFile.
+// requiredUnitDirectives are the hardening and target directives every generated unit must carry.
 var requiredUnitDirectives = []string{
 	"User=creator",
 	"Group=creator",
@@ -58,6 +55,7 @@ var requiredUnitDirectives = []string{
 	"WantedBy=multi-user.target",
 }
 
+// Built-in TLS mode grants the bind capability and bakes -domain/-acme-email into ExecStart.
 func TestRenderUnitFileBuiltin(t *testing.T) {
 	unit := renderUnitFile(DeployOpts{
 		Mode:      TLSModeBuiltin,
@@ -69,12 +67,12 @@ func TestRenderUnitFileBuiltin(t *testing.T) {
 			t.Errorf("built-in unit missing directive %q\n---\n%s", want, unit)
 		}
 	}
-	// Built-in TLS binds privileged ports, so it MUST grant the bind cap.
+
 	if !strings.Contains(unit, "CapabilityBoundingSet=CAP_NET_BIND_SERVICE") ||
 		!strings.Contains(unit, "AmbientCapabilities=CAP_NET_BIND_SERVICE") {
 		t.Errorf("built-in unit must grant CAP_NET_BIND_SERVICE\n---\n%s", unit)
 	}
-	// ExecStart shape: -domain + -acme-email, defaults filled, no proxy flags.
+
 	if !strings.Contains(unit, "-domain issuer.alpha.example") {
 		t.Errorf("built-in ExecStart missing -domain\n---\n%s", unit)
 	}
@@ -89,6 +87,7 @@ func TestRenderUnitFileBuiltin(t *testing.T) {
 	}
 }
 
+// Proxy TLS mode leaves the capability sets empty and binds the loopback -addr instead.
 func TestRenderUnitFileProxy(t *testing.T) {
 	unit := renderUnitFile(DeployOpts{
 		Mode:   TLSModeProxy,
@@ -99,7 +98,7 @@ func TestRenderUnitFileProxy(t *testing.T) {
 			t.Errorf("proxy unit missing directive %q\n---\n%s", want, unit)
 		}
 	}
-	// Proxy mode binds only loopback: capabilities must be EMPTY.
+
 	if !strings.Contains(unit, "CapabilityBoundingSet=\n") ||
 		!strings.Contains(unit, "AmbientCapabilities=\n") {
 		t.Errorf("proxy unit must leave capability sets empty\n---\n%s", unit)
@@ -113,12 +112,13 @@ func TestRenderUnitFileProxy(t *testing.T) {
 	if !strings.Contains(unit, "-public-issuer-url https://issuer.alpha.example/v1/issue") {
 		t.Errorf("proxy ExecStart missing derived -public-issuer-url\n---\n%s", unit)
 	}
-	// No CHANGE_ME placeholder ever — that was the old install.sh footgun.
+
 	if strings.Contains(unit, "CHANGE_ME") {
 		t.Errorf("proxy unit must not contain a CHANGE_ME placeholder\n---\n%s", unit)
 	}
 }
 
+// Issue/redeem URLs derive from the domain, and are empty when no domain is set.
 func TestDeployOptsDerivedURLs(t *testing.T) {
 	o := DeployOpts{Domain: "issuer.alpha.example"}
 	if got := o.IssuerURL(); got != "https://issuer.alpha.example/v1/issue" {
@@ -132,6 +132,8 @@ func TestDeployOptsDerivedURLs(t *testing.T) {
 	}
 }
 
+// parseServiceStatus maps `systemctl show` key=value output to Running/Failed/PID/Since,
+// leaving Since zero when the timestamp is absent or unparseable.
 func TestParseServiceStatus(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -190,6 +192,7 @@ func TestParseServiceStatus(t *testing.T) {
 	}
 }
 
+// extractExecStartLine pulls the ExecStart command from a unit, joining backslash continuations.
 func TestExtractExecStartLine(t *testing.T) {
 	tests := []struct {
 		name string
@@ -224,13 +227,11 @@ func TestExtractExecStartLine(t *testing.T) {
 	}
 }
 
-// TestExecStartRoundTrip renders a unit, pulls ExecStart back out, parses it,
-// and asserts the DeployOpts survive — this is exactly the adopt path
-// (install.sh user with a unit but no console.json).
+// Rendering a unit then parsing its ExecStart back recovers the original deploy options.
 func TestExecStartRoundTrip(t *testing.T) {
 	cases := []DeployOpts{
 		{Mode: TLSModeBuiltin, Domain: "issuer.alpha.example", AcmeEmail: "me@alpha.example"},
-		{Mode: TLSModeBuiltin, Domain: "issuer.beta.example"}, // no email
+		{Mode: TLSModeBuiltin, Domain: "issuer.beta.example"},
 		{Mode: TLSModeProxy, Domain: "issuer.gamma.example"},
 	}
 	for _, in := range cases {
@@ -255,8 +256,9 @@ func TestExecStartRoundTrip(t *testing.T) {
 	}
 }
 
+// parseExecStart also accepts the -flag=value form, not just space-separated flags.
 func TestParseExecStartEqualsForm(t *testing.T) {
-	// Go's flag package also accepts -flag=value; parseExecStart must too.
+
 	got := parseExecStart("/usr/local/bin/creator-server -state-dir=/s -domain=h.example -acme-email=a@b.c")
 	if got.Mode != TLSModeBuiltin || got.Domain != "h.example" ||
 		got.StateDir != "/s" || got.AcmeEmail != "a@b.c" {
@@ -264,6 +266,7 @@ func TestParseExecStartEqualsForm(t *testing.T) {
 	}
 }
 
+// The install verb installs the rendered unit and reports the unit path.
 func TestDispatchServiceVerbInstall(t *testing.T) {
 	f := &fakeController{}
 	var buf bytes.Buffer
@@ -274,7 +277,7 @@ func TestDispatchServiceVerbInstall(t *testing.T) {
 	if len(f.calls) != 1 || f.calls[0] != "install" {
 		t.Errorf("calls = %v, want [install]", f.calls)
 	}
-	// The unit handed to Install must be the one renderUnitFile produced.
+
 	if !strings.Contains(f.installedUnit, "-domain issuer.x.example") ||
 		!strings.Contains(f.installedUnit, "ProtectSystem=strict") {
 		t.Errorf("installed unit not from renderUnitFile:\n%s", f.installedUnit)
@@ -284,6 +287,7 @@ func TestDispatchServiceVerbInstall(t *testing.T) {
 	}
 }
 
+// The lifecycle verbs each invoke exactly their matching controller action.
 func TestDispatchServiceVerbActions(t *testing.T) {
 	for _, verb := range []string{"start", "stop", "restart", "enable-now"} {
 		f := &fakeController{}
@@ -296,6 +300,7 @@ func TestDispatchServiceVerbActions(t *testing.T) {
 	}
 }
 
+// The status verb renders the controller's status as a human-readable line.
 func TestDispatchServiceVerbStatus(t *testing.T) {
 	f := &fakeController{status: ServiceStatus{
 		Active: true, ActiveState: "active", SubState: "running", MainPID: 42,
@@ -309,6 +314,7 @@ func TestDispatchServiceVerbStatus(t *testing.T) {
 	}
 }
 
+// The logs verb prints each returned log line, newline-terminated.
 func TestDispatchServiceVerbLogs(t *testing.T) {
 	f := &fakeController{logs: []string{"line1", "line2"}}
 	var buf bytes.Buffer
@@ -320,6 +326,7 @@ func TestDispatchServiceVerbLogs(t *testing.T) {
 	}
 }
 
+// A failing controller action propagates, and an unknown verb is rejected.
 func TestDispatchServiceVerbErrors(t *testing.T) {
 	f := &fakeController{failOn: map[string]error{"start": errors.New("boom")}}
 	if err := dispatchServiceVerb(f, "start", DeployOpts{}, 0, io.Discard); err == nil {
@@ -330,10 +337,7 @@ func TestDispatchServiceVerbErrors(t *testing.T) {
 	}
 }
 
-// TestCommittedReferenceUnitMatchesGenerator pins the committed reference unit
-// to renderUnitFile's output (proxy mode, CHANGE_ME placeholder) so the file,
-// install.sh, and the console can never drift apart again — the exact bug this
-// slice fixed.
+// The committed reference unit must stay byte-identical to the generator's proxy-mode output.
 func TestCommittedReferenceUnitMatchesGenerator(t *testing.T) {
 	data, err := os.ReadFile("systemd/creator-server.service")
 	if err != nil {

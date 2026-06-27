@@ -8,17 +8,13 @@ import (
 	"testing"
 )
 
-// testCID is a stable 16-byte configId for tests that don't care about
-// the specific bytes. base64url-no-pad of 16 0x00 bytes — passes the
-// configs.json load-time validator (which requires exactly 16 bytes).
 const testCID = "AAAAAAAAAAAAAAAAAAAAAA"
 
-// TestMintShareLinkHappyPath — operator runs mint-share-link against
-// a state-dir that has the named configId registered; subcommand
-// produces a join link and persists the token.
+// Minting a share link persists one token carrying the requested configId,
+// redemption count, and label, with no expiry unless -expires-in is given.
 func TestMintShareLinkHappyPath(t *testing.T) {
 	dir := t.TempDir()
-	// First touch creates state files (creator-key.pem etc).
+
 	if _, err := NewStateWithDir(dir); err != nil {
 		t.Fatalf("init state: %v", err)
 	}
@@ -38,7 +34,6 @@ func TestMintShareLinkHappyPath(t *testing.T) {
 		t.Fatalf("mint-share-link rc = %d, want 0", rc)
 	}
 
-	// redemption-tokens.json now has one entry pointing at testCID.
 	tokens := readTokensFromDisk(t, dir)
 	if len(tokens) != 1 {
 		t.Fatalf("expected 1 token after mint, got %d", len(tokens))
@@ -57,9 +52,7 @@ func TestMintShareLinkHappyPath(t *testing.T) {
 	}
 }
 
-// TestMintShareLinkRejectsUnknownConfigID — the load-bearing safety
-// property: a typo in -config-id fails at mint time, not at first
-// recipient redemption (the end-to-end failure this guards against).
+// A configId with no registered config is rejected and persists no token.
 func TestMintShareLinkRejectsUnknownConfigID(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := NewStateWithDir(dir); err != nil {
@@ -70,7 +63,6 @@ func TestMintShareLinkRejectsUnknownConfigID(t *testing.T) {
 		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 
-	// Use a syntactically-valid-but-not-registered configId.
 	const unregisteredCID = "____________________8w"
 	rc := runMintShareLinkSubcommand([]string{
 		"-state-dir", dir,
@@ -80,15 +72,14 @@ func TestMintShareLinkRejectsUnknownConfigID(t *testing.T) {
 	if rc == 0 {
 		t.Fatalf("expected non-zero rc for unknown configId")
 	}
-	// And nothing should have been persisted.
+
 	tokens := readTokensFromDisk(t, dir)
 	if len(tokens) != 0 {
 		t.Errorf("expected no tokens after failed mint, got %d", len(tokens))
 	}
 }
 
-// TestMintShareLinkRequiresHttps — operator can't accidentally
-// publish a join link pointing at http:// (or a custom scheme).
+// A non-https redemption URL is rejected.
 func TestMintShareLinkRequiresHttps(t *testing.T) {
 	dir := t.TempDir()
 	NewStateWithDir(dir)
@@ -107,8 +98,7 @@ func TestMintShareLinkRequiresHttps(t *testing.T) {
 	}
 }
 
-// TestMintShareLinkExpiresInIsApplied — when the operator passes
-// -expires-in, the persisted token has a non-empty ExpiresAt.
+// -expires-in populates the token's ExpiresAt.
 func TestMintShareLinkExpiresInIsApplied(t *testing.T) {
 	dir := t.TempDir()
 	NewStateWithDir(dir)
@@ -135,10 +125,7 @@ func TestMintShareLinkExpiresInIsApplied(t *testing.T) {
 	}
 }
 
-// TestRevokeTokenRemovesEntry — operator action removes the named
-// token from redemption-tokens.json so subsequent redemptions get
-// 404. Existing per-recipient envelopes already minted under this
-// token are unaffected (they live on recipient devices already).
+// Revoking a token by value removes it from the persisted token list.
 func TestRevokeTokenRemovesEntry(t *testing.T) {
 	dir := t.TempDir()
 	state, _ := NewStateWithDir(dir)
@@ -164,8 +151,7 @@ func TestRevokeTokenRemovesEntry(t *testing.T) {
 	}
 }
 
-// TestRevokeTokenUnknownTokenFails — operator typo gets a clear
-// error instead of silently doing nothing.
+// Revoking a token that was never issued exits non-zero.
 func TestRevokeTokenUnknownTokenFails(t *testing.T) {
 	dir := t.TempDir()
 	NewStateWithDir(dir)
@@ -178,10 +164,8 @@ func TestRevokeTokenUnknownTokenFails(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// helpers
-// ──────────────────────────────────────────────────────────────────
-
+// readTokensFromDisk loads the persisted redemption tokens, treating a missing
+// or empty file as an empty list.
 func readTokensFromDisk(t *testing.T, dir string) []RedemptionToken {
 	t.Helper()
 	path := filepath.Join(dir, "redemption-tokens.json")

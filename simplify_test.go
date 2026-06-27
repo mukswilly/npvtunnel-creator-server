@@ -14,11 +14,10 @@ import (
 	"time"
 )
 
-// TestIssueAlwaysOnRateLimit verifies the issuance rate limit is enforced
-// even with NO attestation policy configured (the default deployment). The
-// pre-change behavior left a policy-off issuer completely unthrottled.
+// /v1/issue is rate-limited even with no attestation policy: exactly the default
+// per-hour quota succeeds and the overflow returns 429.
 func TestIssueAlwaysOnRateLimit(t *testing.T) {
-	_, _, ts := newTestServer(t) // no config registry → stub path, no policy
+	_, _, ts := newTestServer(t)
 	defer ts.Close()
 
 	devPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -35,7 +34,7 @@ func TestIssueAlwaysOnRateLimit(t *testing.T) {
 		RequestNonce: b64url.EncodeToString(randomBytes(t, 16)),
 	}
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
-	body, _ := json.Marshal(req) // replayable — same bytes, valid signature each time
+	body, _ := json.Marshal(req)
 
 	var ok, limited int
 	for i := 0; i < defaultIssuanceLimitPerHour+5; i++ {
@@ -62,9 +61,8 @@ func TestIssueAlwaysOnRateLimit(t *testing.T) {
 	}
 }
 
-// TestReloadConfigsIfChanged verifies configs.json hot-reload picks up new
-// entries on an mtime bump, and that a malformed edit keeps the last-good
-// registry live instead of taking the issuer down.
+// Reloading picks up newly added configs after the file changes, and a malformed
+// edit is rejected while the last-good registry stays intact.
 func TestReloadConfigsIfChanged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "configs.json")
@@ -84,14 +82,13 @@ func TestReloadConfigsIfChanged(t *testing.T) {
 		t.Fatal("id1 should be registered at startup")
 	}
 
-	// Add a second entry; bump mtime so the reload triggers.
 	if err := writeConfigEntries(path, []ConfigEntry{
 		{ConfigID: id1, Config: json.RawMessage(`{"name":"a","type":"V2RAY"}`)},
 		{ConfigID: id2, Config: json.RawMessage(`{"name":"b","type":"SSH"}`)},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	bumpMtime(t, path, 2)
+	bumpMtime(t, path, 2) // reload keys off mtime, so advance it
 	if err := state.ReloadConfigsIfChanged(); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -99,7 +96,6 @@ func TestReloadConfigsIfChanged(t *testing.T) {
 		t.Fatal("id2 should be registered after hot-reload")
 	}
 
-	// A malformed edit must NOT clobber the live registry.
 	if err := os.WriteFile(path, []byte("{ not valid json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +108,7 @@ func TestReloadConfigsIfChanged(t *testing.T) {
 	}
 }
 
-// TestTokenStatus covers the share-link status classification used by
-// `token ls` / `status`.
+// tokenStatus classifies a token as exhausted, expired, expiring soon, or live.
 func TestTokenStatus(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
@@ -134,12 +129,11 @@ func TestTokenStatus(t *testing.T) {
 	}
 }
 
-// TestDecodeConfigString covers `config add` accepting the app's exported
-// config string — base64url of the config body OR raw JSON — without the
-// creator hand-writing the format.
+// decodeConfigString accepts a config as base64url or raw JSON (with surrounding
+// whitespace tolerated) and rejects empty, non-decodable, or non-object input.
 func TestDecodeConfigString(t *testing.T) {
 	bodyJSON := `{"name":"x","address":"h:443","type":"V2RAY","v2rayProfile":{"server":"h","serverPort":"443","password":"npvs1:AAAA"}}`
-	b64 := b64url.EncodeToString([]byte(bodyJSON)) // the app's export form
+	b64 := b64url.EncodeToString([]byte(bodyJSON))
 
 	for _, in := range []string{b64, bodyJSON, "  " + b64 + "  "} {
 		got, err := decodeConfigString(in)
@@ -156,10 +150,10 @@ func TestDecodeConfigString(t *testing.T) {
 	}
 
 	for _, bad := range []string{
-		"",                // empty
-		"not base64 %%%%", // not JSON, not base64
-		"[1,2,3]",         // JSON but not an object
-		"e30",             // base64url of "{}" — empty object
+		"",
+		"not base64 %%%%",
+		"[1,2,3]",
+		"e30",
 	} {
 		if _, err := decodeConfigString(bad); err == nil {
 			t.Errorf("decodeConfigString(%q): expected error, got nil", bad)
@@ -167,9 +161,8 @@ func TestDecodeConfigString(t *testing.T) {
 	}
 }
 
-// TestConsoleBuilds verifies the console constructs and that every screen
-// builder runs without panicking (no terminal / event loop needed). Empty-
-// state screens fall through to a modal; the real screens add their page.
+// Every console screen can be constructed without panicking and registers its
+// page, including the per-config action screens reached from a registered config.
 func TestConsoleBuilds(t *testing.T) {
 	c, err := newConsole(t.TempDir())
 	if err != nil {
@@ -183,7 +176,8 @@ func TestConsoleBuilds(t *testing.T) {
 	if !c.pages.HasPage("addconfig") {
 		t.Fatal("addconfig page missing")
 	}
-	// Server screen: inject fakes so it builds without systemd or network.
+
+	// The server screen probes these dependencies, so stub them first.
 	c.svc = &fakeController{}
 	c.health = fakeHealth{}
 	c.port = fakePort{}
@@ -200,14 +194,12 @@ func TestConsoleBuilds(t *testing.T) {
 	if !c.pages.HasPage("setup") {
 		t.Fatal("setup page missing")
 	}
-	// Empty-state screens (no configs / no tokens yet) and the backup
-	// confirm just need to build without panicking.
+
 	c.showConfigs()
 	c.showTokens()
 	c.showMint("")
 	c.showBackup()
 
-	// With a registered config, the configs table + per-config screens build.
 	id, err := c.appendConfig([]byte(`{"name":"x","type":"V2RAY","v2rayProfile":{"password":"p"}}`), registrationPolicy{})
 	if err != nil {
 		t.Fatalf("appendConfig: %v", err)
@@ -229,6 +221,7 @@ func TestConsoleBuilds(t *testing.T) {
 	}
 }
 
+// bumpMtime advances a file's modification time so a change is detected.
 func bumpMtime(t *testing.T, path string, secs int) {
 	t.Helper()
 	ft := time.Now().Add(time.Duration(secs) * time.Second)

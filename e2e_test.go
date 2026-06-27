@@ -12,32 +12,13 @@ import (
 	"time"
 )
 
-// TestEndToEndRedeemThenIssue is the load-bearing integration test
-// that bridges /v1/redeem and /v1/issue against a single running
-// server.
-//
-// What it proves:
-//
-//  1. A recipient redeems a share-link token, gets back a sealed
-//     envelope addressed to its device.
-//  2. The recipient extracts the configId from the envelope HEADER
-//     (the configId comes from the envelope header, not from SHA-256 of bytes).
-//  3. The recipient signs an IssueRequest carrying that configId and
-//     POSTs to /v1/issue.
-//  4. /v1/issue returns 200 with a usable ConfigBody.
-//
-// In an earlier broken design, step (3) sent a different configId per recipient
-// (the SHA-256 hash differed for every redemption), so step (4) 404'd
-// with config_not_found. The unit tests didn't catch this because they
-// stopped at step (2). This integration test goes the full distance.
-//
-// If this test ever regresses, the share-link distribution flow is
-// broken end-to-end — recipients can redeem but can't connect.
+// TestEndToEndRedeemThenIssue exercises the full flow against one server: redeem a token for an
+// envelope, read the configId from the envelope header, then issue against that configId and
+// confirm the issued config carries the registered config verbatim. This pins that the header's
+// configId matches the registered configs key that /v1/issue routes on.
 func TestEndToEndRedeemThenIssue(t *testing.T) {
 	dir := t.TempDir()
 
-	// Server setup: one configs.json entry, one redemption token.
-	// Both use the same testCID (the routing key).
 	writeConfigs(t, dir, []ConfigEntry{{
 		ConfigID: testCID,
 		Config: json.RawMessage(`{
@@ -66,22 +47,13 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
-	// ─── Recipient side ───────────────────────────────────────────
-
-	// Recipient's signing key (a hardware-backed device key in
-	// production; the test uses a software key).
 	devPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("gen device key: %v", err)
 	}
 	devPkB64 := compressP256ToB64(t, &devPriv.PublicKey)
 
-	// The recipient's ECDH key for envelope unsealing. In production
-	// this is a separate hardware-backed device key; for the
-	// integration we just need the pubkey to address the envelope to.
 	recipientPubCompressed := freshRecipientPubkey(t)
-
-	// ─── Step 1+2: redeem ─────────────────────────────────────────
 
 	redeemReq := RedeemRequest{
 		V:               1,
@@ -99,30 +71,21 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 		t.Fatalf("redeem status %d: %s", redeemResp.StatusCode, envelopeBytes)
 	}
 
-	// Recipient parses the envelope header. The key step that
-	// distinguishes the current design from the previous broken one: the
-	// configId comes from envelope.header.ConfigID, NOT from
-	// SHA-256(envelopeBytes).
 	dec, err := decodeEnvelopeWire(envelopeBytes)
 	if err != nil {
 		t.Fatalf("decode envelope wire: %v", err)
 	}
 	recipientConfigID := dec.Header.ConfigID
 
-	// Sanity: the configId the recipient extracted MUST equal the
-	// configs.json entry's configId. This is the property that makes
-	// /v1/issue routing work; if a future refactor breaks it the
-	// recipient's next /v1/issue 404s.
 	if recipientConfigID != testCID {
 		t.Fatalf("recipient extracted configId %q; want testCID %q (envelope-header value should match the registered configs.json key)",
 			recipientConfigID, testCID)
 	}
 
-	// ─── Step 3+4: issue ──────────────────────────────────────────
-
 	issueReq := IssueRequest{
 		V:        1,
 		DevicePk: devPkB64,
+		// "NONE" attestation: no hardware attestation is required for issuance.
 		Attestation: AttestationBlob{
 			Platform: "NONE", Token: "", Nonce: b64url.EncodeToString(randomBytes(t, 16)),
 		},
@@ -150,9 +113,6 @@ func TestEndToEndRedeemThenIssue(t *testing.T) {
 			issueResp.StatusCode, issueRespBytes)
 	}
 
-	// And the issued ConfigBody decodes + carries the operator's static
-	// config verbatim. (Here we're confirming the *path through
-	// /v1/redeem* still arrives at the routed configs.json entry.)
 	var resp IssueResponse
 	if err := json.Unmarshal(issueRespBytes, &resp); err != nil {
 		t.Fatalf("parse issue response: %v", err)

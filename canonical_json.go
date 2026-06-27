@@ -8,29 +8,15 @@ import (
 	"strings"
 )
 
-// canonicalJSON emits an RFC-8785-style canonical JSON representation
-// of v. Used by the envelope sealer to produce the exact bytes the
-// creator signs over. The byte layout is fixed by the .npvs wire format
-// — any compliant decoder re-computes the same hash input when verifying
-// the signature.
-//
-// Rules implemented (per the wire format):
-//   - Object keys sorted lexicographically (UTF-16 / byte order — equivalent
-//     for ASCII keys, which is all we use in the header schema).
-//   - No whitespace.
-//   - String escapes per RFC 8259: `"`, `\`, `\b`, `\f`, `\n`, `\r`,
-//     `\t`, plus any control char < 0x20 as `\uXXXX`.
-//   - Booleans render as `true` / `false`.
-//   - Numbers are emitted as their decoded text form (no floats are
-//     used in our schema; integer field reuse the JSON number text
-//     `encoding/json` produces).
-//   - `null` for nil.
-//
-// Caller passes a Go value that's already a generic JSON shape
-// (map[string]any, []any, string, bool, json.Number, nil). The
-// envelope sealer marshals its typed struct with encoding/json then
-// re-decodes with json.Number to preserve integer-ness, then passes
-// the result here.
+// Canonical JSON: a single, byte-exact serialization of a value so that
+// independent implementations produce identical bytes. The envelope header is
+// canonicalized this way before it is signed and used as AEAD associated data,
+// so the rules here (sorted object keys, fixed string escaping, integers only)
+// are part of the wire contract and are guarded by a cross-language fixture
+// test.
+
+// canonicalJSON serializes an already-generic value (the types produced by
+// decoding into any) to canonical bytes.
 func canonicalJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := writeCanonical(&buf, v); err != nil {
@@ -39,9 +25,10 @@ func canonicalJSON(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// canonicalJSONOfStruct is the typed-struct convenience: marshal v
-// via encoding/json, re-decode with UseNumber, canonicalize. This is
-// the entry point the sealer uses on its EnvelopeHeader struct.
+// canonicalJSONOfStruct canonicalizes a Go struct by marshaling it, then
+// re-decoding into generic values (with UseNumber so integers stay exact)
+// before serializing. This routes struct output through the same key-sorting
+// and escaping rules as any other value.
 func canonicalJSONOfStruct(v any) ([]byte, error) {
 	raw, err := json.Marshal(v)
 	if err != nil {
@@ -56,6 +43,9 @@ func canonicalJSONOfStruct(v any) ([]byte, error) {
 	return canonicalJSON(generic)
 }
 
+// writeCanonical emits the canonical form of v. Object keys are sorted; numbers
+// must be integers (json.Number or Go ints) — floats are rejected so no
+// implementation-specific float formatting can leak into signed bytes.
 func writeCanonical(buf *bytes.Buffer, v any) error {
 	switch x := v.(type) {
 	case nil:
@@ -69,18 +59,14 @@ func writeCanonical(buf *bytes.Buffer, v any) error {
 	case string:
 		writeCanonicalString(buf, x)
 	case json.Number:
-		// json.Number is a string holding the original JSON number
-		// text — for our schema this is always integer text, which
-		// is already canonical (no leading zeros, no trailing
-		// fractional part for the integer fields we use).
+
 		buf.WriteString(string(x))
 	case int:
 		fmt.Fprintf(buf, "%d", x)
 	case int64:
 		fmt.Fprintf(buf, "%d", x)
 	case float64:
-		// Our schema doesn't use floats. If one shows up it's a bug
-		// the operator wants to know about loudly.
+
 		return fmt.Errorf("canonical JSON: float64 not supported (value %v)", x)
 	case []any:
 		buf.WriteByte('[')
@@ -117,6 +103,9 @@ func writeCanonical(buf *bytes.Buffer, v any) error {
 	return nil
 }
 
+// writeCanonicalString writes a JSON string with a fixed escaping table: the
+// seven short escapes, \u00xx for the remaining control characters, and raw
+// UTF-8 for everything else (no \uXXXX escaping of non-ASCII).
 func writeCanonicalString(buf *bytes.Buffer, s string) {
 	buf.WriteByte('"')
 	var esc strings.Builder
@@ -141,9 +130,7 @@ func writeCanonicalString(buf *bytes.Buffer, s string) {
 			if r < 0x20 {
 				fmt.Fprintf(buf, `\u%04x`, r)
 			} else {
-				// Pass non-control codepoints through as their UTF-8
-				// encoding, written directly (no \u escaping) per the
-				// wire format.
+
 				buf.WriteRune(r)
 			}
 		}

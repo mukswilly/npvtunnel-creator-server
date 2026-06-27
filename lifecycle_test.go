@@ -13,8 +13,7 @@ import (
 	"time"
 )
 
-// ── probe fakes (shared by lifecycle + console-render tests) ────────────
-
+// fakeHealth returns a canned health result and latency for any URL.
 type fakeHealth struct {
 	ok  bool
 	lat time.Duration
@@ -22,10 +21,12 @@ type fakeHealth struct {
 
 func (f fakeHealth) Healthz(string) (bool, time.Duration) { return f.ok, f.lat }
 
+// fakePort reports reachability from a fixed host:port set.
 type fakePort struct{ open map[string]bool }
 
 func (f fakePort) Reachable(hp string) bool { return f.open[hp] }
 
+// fakeCert returns a canned certificate expiry and known flag.
 type fakeCert struct {
 	exp   time.Time
 	known bool
@@ -33,6 +34,8 @@ type fakeCert struct {
 
 func (f fakeCert) Expiry(string, string) (time.Time, bool) { return f.exp, f.known }
 
+// healthURL is the public https /healthz for built-in TLS and the loopback http one for proxy mode,
+// and empty when built-in mode has no domain.
 func TestHealthURL(t *testing.T) {
 	builtin := healthURL(DeployOpts{Mode: TLSModeBuiltin, Domain: "h.example"})
 	if builtin != "https://h.example/healthz" {
@@ -47,6 +50,7 @@ func TestHealthURL(t *testing.T) {
 	}
 }
 
+// Built-in mode probes :80/:443 and certificate expiry as part of the lifecycle snapshot.
 func TestCollectLifecycleBuiltin(t *testing.T) {
 	svc := &fakeController{status: ServiceStatus{Active: true, ActiveState: "active", SubState: "running"}}
 	p := fakePort{open: map[string]bool{"127.0.0.1:80": true, "127.0.0.1:443": true}}
@@ -63,6 +67,7 @@ func TestCollectLifecycleBuiltin(t *testing.T) {
 	}
 }
 
+// Proxy mode skips port probing since the proxy, not this service, owns :80/:443.
 func TestCollectLifecycleProxy(t *testing.T) {
 	svc := &fakeController{status: ServiceStatus{Active: true, ActiveState: "active", SubState: "running"}}
 	o := DeployOpts{Mode: TLSModeProxy, Domain: "issuer.x.example"}.withDefaults()
@@ -76,6 +81,8 @@ func TestCollectLifecycleProxy(t *testing.T) {
 	}
 }
 
+// formatLifecycle renders a snapshot into the status report across running, failed, not-installed,
+// proxy, and cert-issuing cases.
 func TestFormatLifecycle(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 
@@ -131,6 +138,7 @@ func TestFormatLifecycle(t *testing.T) {
 	})
 }
 
+// humanizeDuration renders durations compactly and clamps negatives to "0m".
 func TestHumanizeDuration(t *testing.T) {
 	cases := map[time.Duration]string{
 		9 * time.Minute:              "9m",
@@ -145,6 +153,7 @@ func TestHumanizeDuration(t *testing.T) {
 	}
 }
 
+// leafNotAfter extracts the NotAfter of the leaf certificate from PEM, failing on non-PEM input.
 func TestLeafNotAfter(t *testing.T) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

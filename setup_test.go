@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+// detectSetupState classifies setup as configured (saved deployment), adopt (unit present but no
+// saved deployment), or firstRun (nothing installed).
 func TestDetectSetupState(t *testing.T) {
 	c, err := newConsole(t.TempDir())
 	if err != nil {
@@ -29,6 +31,7 @@ func TestDetectSetupState(t *testing.T) {
 	}
 }
 
+// deploymentFromOpts maps deploy options to the persisted deployment record for both TLS modes.
 func TestDeploymentFromOpts(t *testing.T) {
 	d := deploymentFromOpts(DeployOpts{Mode: TLSModeBuiltin, Domain: "h", AcmeEmail: "e"})
 	if !d.SetupComplete || d.Domain != "h" || d.TLSMode != "builtin" || d.AcmeEmail != "e" {
@@ -40,6 +43,8 @@ func TestDeploymentFromOpts(t *testing.T) {
 	}
 }
 
+// installArgs builds the service-install argument list, omitting -addr for built-in TLS and
+// including -addr/-acme-email where appropriate.
 func TestInstallArgs(t *testing.T) {
 	joined := strings.Join(installArgs(DeployOpts{
 		BinPath: "bin", StateDir: "/s", Mode: TLSModeBuiltin, Domain: "h",
@@ -64,6 +69,7 @@ func TestInstallArgs(t *testing.T) {
 	}
 }
 
+// setupManualInstructions emits the manual install/enable commands reflecting the chosen options.
 func TestSetupManualInstructions(t *testing.T) {
 	txt := setupManualInstructions(DeployOpts{
 		BinPath: "/usr/local/bin/creator-server", Mode: TLSModeBuiltin, Domain: "h",

@@ -11,14 +11,9 @@ import (
 	"strings"
 )
 
-// writeStateBackup bundles the state directory (creator key, audit salt,
-// configs.json, redemption-tokens.json) into one gzipped tar at out, and
-// returns how many files and bytes it archived. The ACME certificate cache
-// (<state-dir>/acme) and transient *.tmp files are skipped — those are
-// renewable / disposable. The output file is never archived into itself.
-//
-// Shared by `creator-server backup` and the management console's backup
-// action so both produce the same artifact.
+// writeStateBackup writes a gzipped tar of stateDir to out (mode 0600). It skips
+// the acme cache subdirectory (re-fetchable), .tmp scratch files, and the output
+// archive itself so a backup written inside the state dir doesn't capture itself.
 func writeStateBackup(stateDir, out string) (files int, bytes int64, err error) {
 	info, serr := os.Stat(stateDir)
 	if serr != nil || !info.IsDir() {
@@ -92,9 +87,7 @@ func writeStateBackup(stateDir, out string) (files int, bytes int64, err error) 
 	return files, bytes, nil
 }
 
-// runBackupSubcommand handles `creator-server backup ...` — a thin CLI
-// wrapper over writeStateBackup. The creator key is the irreplaceable part
-// (losing it breaks every recipient), so this makes "back it up" one command.
+// runBackupSubcommand implements `creator-server backup`.
 func runBackupSubcommand(args []string) int {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)

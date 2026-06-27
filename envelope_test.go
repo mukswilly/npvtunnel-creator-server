@@ -20,8 +20,7 @@ import (
 	"io"
 )
 
-// ─── canonical JSON ───────────────────────────────────────────────
-
+// TestCanonicalJSONSortsKeys verifies object keys are emitted in lexicographic order.
 func TestCanonicalJSONSortsKeys(t *testing.T) {
 	in := map[string]any{"c": 3, "a": 1, "b": 2}
 	out, err := canonicalJSON(in)
@@ -33,6 +32,7 @@ func TestCanonicalJSONSortsKeys(t *testing.T) {
 	}
 }
 
+// TestCanonicalJSONNestedSorting verifies keys are sorted recursively through nested objects and arrays.
 func TestCanonicalJSONNestedSorting(t *testing.T) {
 	in := map[string]any{
 		"z": map[string]any{"y": 1, "x": 2},
@@ -45,17 +45,18 @@ func TestCanonicalJSONNestedSorting(t *testing.T) {
 	}
 }
 
+// TestCanonicalJSONEscapesControlChars verifies control characters and quotes are escaped to the canonical form.
 func TestCanonicalJSONEscapesControlChars(t *testing.T) {
 	in := map[string]any{"k": "a\nb\tc\"d\\e\x01f"}
 	out, _ := canonicalJSON(in)
-	// \x01 in input renders as the  escape per RFC 8259, matching
-	// the documented wire format (lowercase hex padded to 4 digits).
+
 	want := "{\"k\":\"a\\nb\\tc\\\"d\\\\e\\u0001f\"}"
 	if string(out) != want {
 		t.Errorf("got %s\nwant %s", out, want)
 	}
 }
 
+// TestCanonicalJSONFromTypedStructPreservesIntegers verifies struct encoding sorts keys, emits null for nil pointers, and keeps integers integral.
 func TestCanonicalJSONFromTypedStructPreservesIntegers(t *testing.T) {
 	type policy struct {
 		OnlyMobileNetwork bool    `json:"onlyMobileNetwork"`
@@ -70,16 +71,14 @@ func TestCanonicalJSONFromTypedStructPreservesIntegers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonicalJSONOfStruct: %v", err)
 	}
-	// Keys must sort, integer must be `1` not `1.0`, nil pointer
-	// renders as `null` (not omitted), bool renders true.
+
 	want := `{"id":"abc","policy":{"expiresAt":null,"onlyMobileNetwork":true},"v":1}`
 	if string(out) != want {
 		t.Errorf("got %s\nwant %s", out, want)
 	}
 }
 
-// ─── P-256 helpers ────────────────────────────────────────────────
-
+// TestCompressDecompressRoundTrip verifies a P-256 public key compresses to 33 bytes with a valid 0x02/0x03 prefix and decompresses back.
 func TestCompressDecompressRoundTrip(t *testing.T) {
 	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	compressed, err := compressP256(&priv.PublicKey)
@@ -92,23 +91,16 @@ func TestCompressDecompressRoundTrip(t *testing.T) {
 	if compressed[0] != 0x02 && compressed[0] != 0x03 {
 		t.Errorf("prefix 0x%02x not in {0x02, 0x03}", compressed[0])
 	}
-	// Decompress back via the ecdh helper to confirm it round-trips
-	// to a usable point (decoder rejects invalid points).
+
 	if _, err := decodeP256CompressedToEcdh(compressed); err != nil {
 		t.Errorf("decompress failed: %v", err)
 	}
 }
 
-// ─── KEM wrap ↔ unwrap round trip ─────────────────────────────────
-//
-// Independent re-implementation of the envelope RECEIVER (unwrap) step
-// (a recipient's unwrap routine, in pure Go for testing).
-// Confirms the minter's wrap step produces bytes that the documented
-// receiver flow can recover the DEK from.
-
+// TestEcdhEphemeralWrapRoundTrip verifies the 93-byte DEK wrap (ephemeral pubkey + nonce + ciphertext) and that the recipient recovers the DEK via ECDH+HKDF+AES-GCM bound to the recipient fingerprint and configID.
 func TestEcdhEphemeralWrapRoundTrip(t *testing.T) {
 	recipientPriv, _ := ecdh.P256().GenerateKey(rand.Reader)
-	recipientPub := recipientPriv.PublicKey().Bytes() // 65-byte uncompressed
+	recipientPub := recipientPriv.PublicKey().Bytes()
 	recipientPubCompressed, err := compressUncompressedP256(recipientPub)
 	if err != nil {
 		t.Fatalf("compress recipient pub: %v", err)
@@ -128,8 +120,7 @@ func TestEcdhEphemeralWrapRoundTrip(t *testing.T) {
 		t.Errorf("fp mismatch")
 	}
 
-	// Receiver-side: parse wrap, run ECDH with recipient_sk, HKDF,
-	// AES-GCM decrypt.
+	// Wrap layout: 33-byte ephemeral compressed pubkey, 12-byte nonce, then ciphertext+tag.
 	ephPkCompressed := wrap[:33]
 	nonce := wrap[33:45]
 	ctWithTag := wrap[45:]
@@ -143,6 +134,8 @@ func TestEcdhEphemeralWrapRoundTrip(t *testing.T) {
 		t.Fatalf("recipient ECDH: %v", err)
 	}
 
+	// Derive the key-derivation key: HKDF over the ECDH shared secret, salted with the
+	// recipient fingerprint and bound to the configID via the info string.
 	info := append([]byte("NPVS-v1-wrap"), configID...)
 	kdk := make([]byte, 32)
 	if _, err := io.ReadFull(hkdf.New(sha256.New, shared, fp, info), kdk); err != nil {
@@ -160,18 +153,20 @@ func TestEcdhEphemeralWrapRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEcdhEphemeralWrapRejectsInvalidRecipientPubkey verifies wrapping fails when the recipient pubkey has an invalid compression prefix.
 func TestEcdhEphemeralWrapRejectsInvalidRecipientPubkey(t *testing.T) {
-	// 33 bytes but with a prefix that's neither 0x02 nor 0x03.
+
 	bad := make([]byte, 33)
-	bad[0] = 0x05
+	bad[0] = 0x05 // not a valid compressed-point prefix (must be 0x02 or 0x03)
 	_, _, err := ecdhEphemeralWrap(bad, bytes.Repeat([]byte{0}, 16), bytes.Repeat([]byte{0}, 32))
 	if err == nil {
 		t.Fatal("expected error for invalid pubkey")
 	}
 }
 
-// ─── Full envelope round trip ─────────────────────────────────────
-
+// TestMintEnvelopeRoundTrip mints an envelope, then exercises the full recipient path:
+// decode the wire format, verify the creator signature over the signed range, unwrap the
+// DEK, decrypt the body, and confirm the body fields and the configFp = SHA-256(envelope).
 func TestMintEnvelopeRoundTrip(t *testing.T) {
 	creatorPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	recipientPriv, _ := ecdh.P256().GenerateKey(rand.Reader)
@@ -190,7 +185,6 @@ func TestMintEnvelopeRoundTrip(t *testing.T) {
 		t.Errorf("envelope suspiciously small: %d bytes", len(out.EnvelopeBytes))
 	}
 
-	// Decode wire layout.
 	dec, err := decodeEnvelopeWire(out.EnvelopeBytes)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
@@ -205,20 +199,19 @@ func TestMintEnvelopeRoundTrip(t *testing.T) {
 		t.Fatalf("want 1 recipient, got %d", len(dec.Header.Recipients))
 	}
 
-	// Verify the signature over the canonical signed range.
+	// Signature covers header bytes + body nonce + body ciphertext, as a raw 64-byte r||s pair.
 	toSign := buildSignedRange(dec.HeaderBytes, dec.BodyNonce, dec.BodyCiphertext)
 	hash := sha256.Sum256(toSign)
 	if len(dec.Signature) != 64 {
 		t.Fatalf("sig len = %d", len(dec.Signature))
 	}
-	// P1363 → r,s back to verify.
+
 	r := new(big.Int).SetBytes(dec.Signature[:32])
 	s := new(big.Int).SetBytes(dec.Signature[32:])
 	if !ecdsa.Verify(&creatorPriv.PublicKey, hash[:], r, s) {
 		t.Error("signature failed verification with creator pubkey")
 	}
 
-	// Unwrap the DEK as the recipient would.
 	wrapBytes, err := b64url.DecodeString(dec.Header.Recipients[0].Wrap)
 	if err != nil {
 		t.Fatalf("decode wrap: %v", err)
@@ -240,13 +233,11 @@ func TestMintEnvelopeRoundTrip(t *testing.T) {
 		t.Fatalf("recipient unwrap: %v", err)
 	}
 
-	// Decrypt the body. AAD = headerBytes.
 	body, err := chachaPoly1305Decrypt(dek, dec.BodyNonce, dec.HeaderBytes, dec.BodyCiphertext)
 	if err != nil {
 		t.Fatalf("body decrypt: %v", err)
 	}
 
-	// Parse the body and check fields.
 	var b issuerBody
 	if err := json.Unmarshal(body, &b); err != nil {
 		t.Fatalf("parse body: %v", err)
@@ -257,18 +248,18 @@ func TestMintEnvelopeRoundTrip(t *testing.T) {
 	if b.IssuerURL != "https://issuer.test/v1/issue" {
 		t.Errorf("body.issuerUrl = %q", b.IssuerURL)
 	}
-	// creatorPubkey in the body matches header.creator.pk.
+
 	if b.CreatorPubkey != dec.Header.Creator.Pk {
 		t.Errorf("body.creatorPubkey != header.creator.pk")
 	}
 
-	// configFp is sha256 of the envelope bytes, base64url-no-pad.
 	expectedConfigFp := sha256.Sum256(out.EnvelopeBytes)
 	if out.ConfigFp != b64url.EncodeToString(expectedConfigFp[:]) {
 		t.Errorf("configFp mismatch")
 	}
 }
 
+// TestMintEnvelopeMultipleRecipients verifies one envelope carries a wrap per recipient, each with a distinct fingerprint.
 func TestMintEnvelopeMultipleRecipients(t *testing.T) {
 	creatorPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	pubs := make([][]byte, 3)
@@ -288,7 +279,7 @@ func TestMintEnvelopeMultipleRecipients(t *testing.T) {
 	if len(dec.Header.Recipients) != 3 {
 		t.Errorf("recipients = %d, want 3", len(dec.Header.Recipients))
 	}
-	// Each recipient's fp must be distinct.
+
 	seen := map[string]bool{}
 	for _, r := range dec.Header.Recipients {
 		if seen[r.Fp] {
@@ -298,6 +289,7 @@ func TestMintEnvelopeMultipleRecipients(t *testing.T) {
 	}
 }
 
+// TestMintEnvelopeRejectsEmptyRecipients verifies minting requires at least one recipient.
 func TestMintEnvelopeRejectsEmptyRecipients(t *testing.T) {
 	creatorPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	_, err := mintIssuerEnvelope(mintInput{
@@ -310,11 +302,12 @@ func TestMintEnvelopeRejectsEmptyRecipients(t *testing.T) {
 	}
 }
 
+// TestMintEnvelopeRejectsBadRecipientLength verifies a recipient pubkey that isn't 33 bytes is rejected.
 func TestMintEnvelopeRejectsBadRecipientLength(t *testing.T) {
 	creatorPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	_, err := mintIssuerEnvelope(mintInput{
 		CreatorKey:       creatorPriv,
-		RecipientPubKeys: [][]byte{make([]byte, 32)}, // should be 33
+		RecipientPubKeys: [][]byte{make([]byte, 32)},
 		IssuerURL:        "https://x.test/v1/issue",
 	})
 	if err == nil || !strings.Contains(err.Error(), "33") {
@@ -322,6 +315,7 @@ func TestMintEnvelopeRejectsBadRecipientLength(t *testing.T) {
 	}
 }
 
+// TestMintEnvelopeRejectsMissingIssuerURL verifies minting requires an issuer URL.
 func TestMintEnvelopeRejectsMissingIssuerURL(t *testing.T) {
 	creatorPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	p, _ := ecdh.P256().GenerateKey(rand.Reader)
@@ -335,11 +329,11 @@ func TestMintEnvelopeRejectsMissingIssuerURL(t *testing.T) {
 	}
 }
 
+// TestSameInputsProduceDifferentEnvelopes verifies minting is non-deterministic: identical
+// inputs yield distinct envelope bytes and configFp, since fresh randomness (DEK, nonces,
+// ephemeral keys) is drawn each time.
 func TestSameInputsProduceDifferentEnvelopes(t *testing.T) {
-	// DEK + body nonce are random per seal — re-running the minter
-	// with identical inputs should produce different bytes (and thus
-	// different configFps). Protects against accidental
-	// determinism that would defeat replay resistance.
+
 	creatorPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	p, _ := ecdh.P256().GenerateKey(rand.Reader)
 	pc, _ := compressUncompressedP256(p.PublicKey().Bytes())
