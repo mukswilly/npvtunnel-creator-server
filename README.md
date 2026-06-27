@@ -178,6 +178,12 @@ The server returns this config **verbatim** to recipients — it never mints,
 derives, or rewrites the secrets inside it. Because the app produces the
 string, you never touch the config's field layout.
 
+The pasted string also carries the per-config choices you set in the app's
+export screen — the **"block rooted devices"** attestation gate and the use
+restrictions (mobile-only, expiry, on-open messages). `config add` reads them
+out of the string and applies them to *this config only*; you never hand-edit
+`configs.json` to turn attestation on.
+
 > **Advanced.** `config add` also accepts raw config JSON (`-config '{…}'` or
 > `-config-file f.json`) and can build a v2ray entry from flags
 > (`-server -port -address -password`). A per-entry `configTtlSec` (60s–7d,
@@ -243,7 +249,12 @@ audience.
 
 ### Attestation tiers
 
-`attestationPolicy` controls how the server treats devices:
+The app's export **"block rooted devices"** toggle is the normal way to require
+attestation: it rides in the "Copy for creator-server" bundle and `config add`
+stamps a **strict** policy onto *that config*. The `attestationPolicy` field in
+`configs.json` below is the manual override — for the softer tiers, iOS App
+Attest, or custom gates. Either way it is **per-config** (it lives on the config
+entry, never server-wide) and controls how the server treats devices:
 
 | Mode | Behavior |
 |---|---|
@@ -271,10 +282,14 @@ is the iOS equivalent (set `appId` to `TEAMID.bundle.id`; don't set
 `requireVerifiedBoot` — iOS doesn't expose it).
 
 > **⚠ Audience-fit warning.** Do **not** enable `strict` / `requireVerifiedBoot`
-> for sideload-heavy audiences. Many users in censored regions run rooted phones
-> *by necessity*, and these gates lock them out. They're for managed audiences
-> where everyone is on stock firmware. Open audiences should leave attestation
-> `off` and rely on short re-fetch cadences + your own data-plane rotation.
+> for sideload-heavy audiences. It locks out more than rooted phones. Many users
+> in censored regions run rooted phones *by necessity*, and the gate also turns
+> away devices that simply **can't** attest — Android 6 (which predates key
+> attestation) and any device without secure hardware. Those recipients are
+> never issued the config; it just fails for them, with no way to opt in. Use it
+> only for managed audiences on stock firmware. Open audiences should leave
+> attestation `off` and rely on short re-fetch cadences + your own data-plane
+> rotation.
 
 ### Rate limit
 
