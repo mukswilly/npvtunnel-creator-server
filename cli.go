@@ -18,23 +18,15 @@ import (
 	"time"
 )
 
-// This file holds the operator-facing management CLI: a guided `init`
-// wizard plus read/verb subcommands (config ls/add, token ls/revoke,
-// status). Design goals: no extra dependencies (stdlib only), scriptable in
-// a pipe AND friendly on a TTY (prompt-on-missing-input when interactive),
-// and plain output that honors NO_COLOR.
-
-// ─── TTY + color helpers ──────────────────────────────────────────────
-
-// stdinIsTTY reports whether stdin is an interactive terminal (so we can
-// prompt) vs. a pipe/redirect (so we stay scriptable and never block).
+// stdinIsTTY reports whether standard input is a terminal (as opposed to a
+// pipe or file), used to decide whether interactive prompting is appropriate.
 func stdinIsTTY() bool {
 	fi, err := os.Stdin.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
-// colorEnabled reports whether to emit ANSI color: only when stdout is a
-// terminal and NO_COLOR is unset (https://no-color.org).
+// colorEnabled reports whether ANSI color should be emitted: false when the
+// NO_COLOR environment variable is set or when stdout is not a terminal.
 func colorEnabled() bool {
 	if _, set := os.LookupEnv("NO_COLOR"); set {
 		return false
@@ -52,6 +44,8 @@ const (
 	ansiYellow = "\x1b[33m"
 )
 
+// paint wraps s in the given ANSI code (and a reset) when on is true,
+// otherwise returns s unchanged.
 func paint(on bool, code, s string) string {
 	if !on {
 		return s
@@ -59,8 +53,10 @@ func paint(on bool, code, s string) string {
 	return code + s + ansiReset
 }
 
-// promptLine prints "label [def]: " and returns the typed line, or def on
-// empty input. Caller should only invoke when stdinIsTTY().
+// promptLine writes label (with def shown in brackets when non-empty) to
+// stderr, reads one line from r, and returns the trimmed input, falling back
+// to def when the line is blank. The prompt goes to stderr so stdout stays
+// reserved for machine-readable output.
 func promptLine(r *bufio.Reader, label, def string) string {
 	if def != "" {
 		fmt.Fprintf(os.Stderr, "%s [%s]: ", label, def)
@@ -75,8 +71,9 @@ func promptLine(r *bufio.Reader, label, def string) string {
 	return line
 }
 
-// ─── config-entry file helpers (read/append without key side effects) ──
-
+// readConfigEntries reads and parses the configs.json registry at path. A
+// missing file is not an error: it returns a nil slice so callers treat it as
+// "no configs registered yet".
 func readConfigEntries(path string) ([]ConfigEntry, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -92,6 +89,9 @@ func readConfigEntries(path string) ([]ConfigEntry, error) {
 	return list, nil
 }
 
+// writeConfigEntries writes list as indented JSON to path atomically, by
+// writing a sibling .tmp file (mode 0600) and renaming it into place so a
+// crash mid-write cannot leave a truncated registry.
 func writeConfigEntries(path string, list []ConfigEntry) error {
 	data, err := json.MarshalIndent(list, "", "  ")
 	if err != nil {
@@ -104,8 +104,10 @@ func writeConfigEntries(path string, list []ConfigEntry) error {
 	return os.Rename(tmp, path)
 }
 
-// parseCreatorPubkey reads creator-key.pem (without creating it) and
-// returns the pinned compressed pubkey, or "" if the file is absent.
+// parseCreatorPubkey loads creator-key.pem from stateDir and returns the
+// compressed P-256 public key in base64url form. It returns an empty string
+// if the key file is absent or unparseable, so callers can show a "no key
+// yet" state without failing.
 func parseCreatorPubkey(stateDir string) string {
 	data, err := os.ReadFile(filepath.Join(stateDir, "creator-key.pem"))
 	if err != nil {
@@ -126,26 +128,31 @@ func parseCreatorPubkey(stateDir string) string {
 	return (&State{CreatorSigningKey: priv}).CreatorPubKeyCompressedB64()
 }
 
-// shortConfigName / configSummary pull display fields out of a config body.
+// configSummary holds the few human-facing fields pulled out of a config body
+// for display in listings.
 type configSummary struct {
 	Name    string `json:"name"`
 	Address string `json:"address"`
 	Type    string `json:"type"`
 }
 
+// summarizeConfig extracts the display fields from a config body, ignoring any
+// fields it does not recognize. A decode failure yields a zero summary rather
+// than an error.
 func summarizeConfig(raw json.RawMessage) configSummary {
 	var c configSummary
 	_ = json.Unmarshal(raw, &c)
 	return c
 }
 
-// ─── init wizard ──────────────────────────────────────────────────────
-
-// runInitSubcommand handles `creator-server init`: a one-shot guided setup
-// that creates the state directory + signing key, ensures a configs.json
-// exists, and prints the exact command to run the server (built-in TLS or
-// behind a reverse proxy). Interactive on a TTY; flag/default-driven in a
-// pipe.
+// runInitSubcommand implements `creator-server init`: it provisions a state
+// directory (generating the signing key and an empty configs.json), then
+// prints tailored instructions for running the server and registering configs.
+// On a terminal it walks the operator through the choices interactively unless
+// -non-interactive is given. Flags: -state-dir (where state lives), -domain
+// (public hostname), -tls ("builtin" Let's Encrypt or "proxy" reverse proxy),
+// -acme-email (ACME contact for builtin TLS), -non-interactive (skip prompts).
+// Returns 0 on success, 2 for bad usage, 1 for I/O failures.
 func runInitSubcommand(args []string) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -158,6 +165,7 @@ func runInitSubcommand(args []string) int {
 		return 2
 	}
 
+	// Prompt only on a real terminal and only when the operator hasn't opted out.
 	interactive := stdinIsTTY() && !*noPrompt
 	r := bufio.NewReader(os.Stdin)
 	if interactive {
@@ -177,6 +185,7 @@ func runInitSubcommand(args []string) int {
 			*acmeEmail = promptLine(r, "Contact email for Let's Encrypt (optional)", "")
 		}
 	}
+	// Default to builtin TLS when nothing was chosen, then reject anything else.
 	if *tlsMode == "" {
 		*tlsMode = "builtin"
 	}
@@ -185,7 +194,7 @@ func runInitSubcommand(args []string) int {
 		return 2
 	}
 
-	// Create state dir + key + audit salt (NewStateWithDir does all three).
+	// Opening the state directory generates the signing key if it is absent.
 	state, err := NewStateWithDir(*stateDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "init: create state:", err)
@@ -193,8 +202,7 @@ func runInitSubcommand(args []string) int {
 	}
 	pubkey := state.CreatorPubKeyCompressedB64()
 
-	// Ensure a configs.json exists (empty registry) so the server runs in
-	// registry mode and `config add` has a file to append to.
+	// Seed an empty registry so the server has a configs.json to hot-reload.
 	configsPath := filepath.Join(*stateDir, "configs.json")
 	if _, statErr := os.Stat(configsPath); errors.Is(statErr, os.ErrNotExist) {
 		if werr := writeConfigEntries(configsPath, []ConfigEntry{}); werr != nil {
@@ -207,6 +215,8 @@ func runInitSubcommand(args []string) int {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintf(os.Stderr, "State directory : %s\n", *stateDir)
 	fmt.Fprintf(os.Stderr, "Creator pubkey  : %s  (recipients pin this)\n", pubkey)
+	// A freshly generated key has no backup yet; warn loudly that losing it
+	// invalidates every config already handed out.
 	if state.KeyWasCreated() {
 		fmt.Fprintln(os.Stderr, paint(bold, ansiYellow+ansiBold,
 			"!! BACK UP "+filepath.Join(*stateDir, "creator-key.pem")+
@@ -214,7 +224,6 @@ func runInitSubcommand(args []string) int {
 		fmt.Fprintf(os.Stderr, "   creator-server backup -state-dir %s\n", *stateDir)
 	}
 
-	// Recommend the run command.
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, paint(bold, ansiBold, "Run the server:"))
 	if *tlsMode == "builtin" {
@@ -251,8 +260,8 @@ func runInitSubcommand(args []string) int {
 	return 0
 }
 
-// ─── config ls / add ──────────────────────────────────────────────────
-
+// runConfigSubcommand dispatches `creator-server config` to its verbs: "ls"
+// (alias "list") to print the registry and "add" to register a config.
 func runConfigSubcommand(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "config: expected a verb: ls | add")
@@ -269,6 +278,9 @@ func runConfigSubcommand(args []string) int {
 	}
 }
 
+// runConfigLs implements `config ls`: it reads the registry from
+// -state-dir/configs.json and prints a column-aligned table of registered
+// configs (id, name, type, address) to stdout. Requires -state-dir.
 func runConfigLs(args []string) int {
 	fs := flag.NewFlagSet("config ls", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -299,6 +311,13 @@ func runConfigLs(args []string) int {
 	return 0
 }
 
+// runConfigAdd implements `config add`: it takes a config (an exported config
+// string or raw JSON, via -config, -config-file, an interactive paste, or the
+// -server/-port/-address quick-build), assigns it a fresh random configId, and
+// appends it to -state-dir/configs.json. Any use restrictions carried in a
+// registration bundle become the entry's issued policy, and a "block rooted"
+// flag attaches a strict device-attestation policy. The new configId is
+// printed to stdout. Requires -state-dir.
 func runConfigAdd(args []string) int {
 	fs := flag.NewFlagSet("config add", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -309,8 +328,7 @@ func runConfigAdd(args []string) int {
 			"hand-write the app's config format — the app produces this for you.")
 	configFile := fs.String("config-file", "",
 		"read the config string / JSON from a file instead of -config")
-	// Advanced escape hatch for operators who know the wire shape and want
-	// to build a V2RAY config by hand instead of pasting the app's export.
+
 	name := fs.String("name", "", "[advanced] V2RAY quick-build: display name")
 	address := fs.String("address", "", "[advanced] V2RAY quick-build: server address host:port")
 	server := fs.String("server", "", "[advanced] V2RAY quick-build: server host")
@@ -324,8 +342,7 @@ func runConfigAdd(args []string) int {
 		return 2
 	}
 
-	// Resolve the pasted config string from -config, -config-file, or an
-	// interactive paste.
+	// Resolve the config text in priority order: -config, then -config-file.
 	raw := strings.TrimSpace(*configStr)
 	if raw == "" && *configFile != "" {
 		data, err := os.ReadFile(*configFile)
@@ -335,6 +352,8 @@ func runConfigAdd(args []string) int {
 		}
 		raw = strings.TrimSpace(string(data))
 	}
+	// Fall back to an interactive paste only when nothing was supplied, the
+	// quick-build flags aren't in use, and stdin is a terminal.
 	usingQuickBuild := *server != "" || *port != "" || *address != ""
 	if raw == "" && !usingQuickBuild && stdinIsTTY() {
 		r := bufio.NewReader(os.Stdin)
@@ -343,6 +362,8 @@ func runConfigAdd(args []string) int {
 		raw = strings.TrimSpace(promptLine(r, "config string", ""))
 	}
 
+	// Produce the config body and any policy: decode a pasted string/bundle,
+	// or assemble a minimal V2RAY body from the quick-build flags.
 	var body json.RawMessage
 	var rp registrationPolicy
 	switch {
@@ -380,7 +401,7 @@ func runConfigAdd(args []string) int {
 		return 2
 	}
 
-	// Fresh 16-byte configId (the routing key the envelope embeds).
+	// Mint a random configId for this entry.
 	idBytes := make([]byte, envelopeConfigIDLen)
 	if _, err := rand.Read(idBytes); err != nil {
 		fmt.Fprintln(os.Stderr, "config add: rand:", err)
@@ -395,13 +416,13 @@ func runConfigAdd(args []string) int {
 		return 1
 	}
 	entry := ConfigEntry{ConfigID: configID, Config: body}
+	// A "block rooted" request gates issuance behind strict device attestation.
 	if rp.blockRooted {
-		// The app's "block rooted devices" toggle → a strict issuance-time
-		// attestation gate, enforced server-side (the only place it can be).
+
 		entry.AttestationPolicy = strictDeviceAttestationPolicy()
 	}
-	// Use restrictions (mobile-only / expiry / messages) ride into every issued
-	// config so they apply to share-link recipients, just like a file export.
+
+	// Carry any remaining use restrictions onto every envelope issued for it.
 	entry.IssuedPolicy = issuedPolicyFrom(rp)
 	list = append(list, entry)
 	if err := writeConfigEntries(configsPath, list); err != nil {
@@ -424,15 +445,13 @@ func runConfigAdd(args []string) int {
 	return 0
 }
 
-// configRegistrationKind marks the app's "Copy for creator-server" bundle so
-// the server can tell it from a bare config body or hand-pasted raw JSON.
+// configRegistrationKind is the value of the "kind" field that marks a config
+// string as a registration bundle (a config body wrapped together with use
+// restrictions) rather than a bare config object.
 const configRegistrationKind = "npv-config-registration"
 
-// registrationPolicy carries the creator's per-config choices from the app's
-// "Copy for creator-server" bundle: the device-attestation gate (blockRooted,
-// applied as an issuance-time AttestationPolicy) plus the use restrictions
-// (mobile-only / expiry / messages) the issuer stamps onto every config it hands
-// out, so share-link recipients enforce them exactly as a file recipient would.
+// registrationPolicy holds the use restrictions a registration bundle may
+// carry alongside its config body.
 type registrationPolicy struct {
 	blockRooted         bool
 	onlyMobileNetwork   bool
@@ -441,18 +460,12 @@ type registrationPolicy struct {
 	customServerMessage string
 }
 
-// decodeConfigRegistration turns the string a creator pasted into the config
-// body the issuer stores plus the creator's [registrationPolicy]. Two shapes:
-//
-//   - the app's "Copy for creator-server" bundle —
-//     {"kind":"npv-config-registration","config":{…},"blockRooted":bool, …} —
-//     returns the inner config body and the chosen policy;
-//   - a bare config body (raw JSON object, or base64url of one) — the
-//     hand-pasted / pre-bundle shape — returns it as-is with a zero policy.
-//
-// The body is what the issuer stores and returns to recipients verbatim; the
-// policy is applied by the caller (never stored in the body). The creator never
-// has to know the field layout.
+// decodeConfigRegistration parses a config string into a compact config body
+// and its policy. The input may be raw JSON (starting with '{') or base64url.
+// When the decoded object is a registration bundle (kind ==
+// configRegistrationKind) the inner "config" object is returned along with the
+// bundle's restrictions; otherwise the object is treated as the config body
+// itself and a zero policy is returned.
 func decodeConfigRegistration(s string) (json.RawMessage, registrationPolicy, error) {
 	var zero registrationPolicy
 	s = strings.TrimSpace(s)
@@ -461,7 +474,7 @@ func decodeConfigRegistration(s string) (json.RawMessage, registrationPolicy, er
 	}
 	var candidate []byte
 	if strings.HasPrefix(s, "{") {
-		candidate = []byte(s) // already raw JSON
+		candidate = []byte(s)
 	} else {
 		dec, err := b64url.DecodeString(s)
 		if err != nil {
@@ -477,7 +490,6 @@ func decodeConfigRegistration(s string) (json.RawMessage, registrationPolicy, er
 		return nil, zero, fmt.Errorf("config decoded to an empty object")
 	}
 
-	// Registration bundle? Keyed off "kind" — unambiguous against a bare body.
 	if kindRaw, ok := probe["kind"]; ok {
 		var kind string
 		if json.Unmarshal(kindRaw, &kind) == nil && kind == configRegistrationKind {
@@ -485,6 +497,8 @@ func decodeConfigRegistration(s string) (json.RawMessage, registrationPolicy, er
 			if !ok || len(bodyRaw) == 0 {
 				return nil, zero, fmt.Errorf("registration bundle is missing its \"config\" body")
 			}
+			// Copy each known restriction out of the bundle when present,
+			// leaving its zero value otherwise.
 			var rp registrationPolicy
 			into := func(key string, dst any) {
 				if v, ok := probe[key]; ok {
@@ -504,7 +518,6 @@ func decodeConfigRegistration(s string) (json.RawMessage, registrationPolicy, er
 		}
 	}
 
-	// Bare config body.
 	body, err := compactJSONObject(candidate)
 	if err != nil {
 		return nil, zero, err
@@ -512,10 +525,10 @@ func decodeConfigRegistration(s string) (json.RawMessage, registrationPolicy, er
 	return body, zero, nil
 }
 
-// issuedPolicyFrom builds the per-config envelope policy the issuer stamps on
-// every config it hands out (so mobile-only / expiry / messages reach share-link
-// recipients), or nil when the creator set no restriction. attestationLevel
-// stays NONE — device attestation is the separate server-side AttestationPolicy.
+// issuedPolicyFrom converts a registration policy into the per-envelope policy
+// stamped onto issued configs. It returns nil when no envelope-level
+// restriction is set (blockRooted is enforced separately via attestation, not
+// here). The attestation level is always "NONE".
 func issuedPolicyFrom(rp registrationPolicy) *envelopePolicy {
 	if !rp.onlyMobileNetwork && rp.expiresAt == "" && rp.displayMessage == "" && rp.customServerMessage == "" {
 		return nil
@@ -529,8 +542,8 @@ func issuedPolicyFrom(rp registrationPolicy) *envelopePolicy {
 	}
 }
 
-// compactJSONObject asserts raw is a non-empty JSON object and returns it
-// compacted (exact tokens preserved) for stable on-disk storage.
+// compactJSONObject validates that raw is a non-empty JSON object and returns
+// it with insignificant whitespace removed.
 func compactJSONObject(raw json.RawMessage) (json.RawMessage, error) {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
@@ -546,15 +559,16 @@ func compactJSONObject(raw json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(buf.Bytes()), nil
 }
 
-// decodeConfigString is the body-only form, for callers that take no
-// attestation choice (e.g. Replace, which keeps the config's existing policy).
+// decodeConfigString returns just the config body from a config string,
+// discarding any registration-bundle policy. It is the body-only form of
+// decodeConfigRegistration.
 func decodeConfigString(s string) (json.RawMessage, error) {
 	body, _, err := decodeConfigRegistration(s)
 	return body, err
 }
 
-// ─── token ls / revoke ────────────────────────────────────────────────
-
+// runTokenSubcommand dispatches `creator-server token` to its verbs: "ls"
+// (alias "list") to print share-link tokens and "revoke" to delete one.
 func runTokenSubcommand(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "token: expected a verb: ls | revoke")
@@ -564,7 +578,7 @@ func runTokenSubcommand(args []string) int {
 	case "ls", "list":
 		return runTokenLs(args[1:])
 	case "revoke":
-		// Alias for the legacy `revoke-token` subcommand.
+		// Shares the implementation with the standalone revoke-token command.
 		return runRevokeTokenSubcommand(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "token: unknown verb %q (want: ls | revoke)\n", args[0])
@@ -572,6 +586,10 @@ func runTokenSubcommand(args []string) int {
 	}
 }
 
+// runTokenLs implements `token ls`: it loads share-link tokens from
+// -state-dir/redemption-tokens.json, sorts them, and prints a column-aligned
+// table to stdout with each token's remaining redemptions, expiry, label, and
+// a color-coded status (live/expiring/expired/exhausted). Requires -state-dir.
 func runTokenLs(args []string) int {
 	fs := flag.NewFlagSet("token ls", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -592,7 +610,7 @@ func runTokenLs(args []string) int {
 		fmt.Fprintln(os.Stderr, "no share-link tokens. Mint one with: creator-server mint-share-link ...")
 		return 0
 	}
-	// Stable order: by createdAt then token.
+
 	list := make([]RedemptionToken, 0, len(tokens))
 	for _, t := range tokens {
 		list = append(list, *t)
@@ -622,15 +640,22 @@ func runTokenLs(args []string) int {
 	return 0
 }
 
+// tokenStatusCode classifies a share-link token's lifecycle state for display.
 type tokenStatusCode int
 
 const (
+	// statusLive marks a token with redemptions left and no near-term expiry.
 	statusLive tokenStatusCode = iota
+	// statusExpiring marks a token expiring within 24 hours.
 	statusExpiring
+	// statusExpired marks a token whose expiry has passed.
 	statusExpired
+	// statusExhausted marks a token with no redemptions remaining.
 	statusExhausted
 )
 
+// tokenStatus classifies t relative to now and returns both a display string
+// and its code. Exhaustion is checked before expiry.
 func tokenStatus(t RedemptionToken, now time.Time) (string, tokenStatusCode) {
 	if t.RemainingRedemptions <= 0 {
 		return "exhausted", statusExhausted
@@ -648,6 +673,9 @@ func tokenStatus(t RedemptionToken, now time.Time) (string, tokenStatusCode) {
 	return "live", statusLive
 }
 
+// expiryDisplay formats an RFC3339 expiry for a table cell: "never" when
+// empty, the raw string when unparseable, otherwise the date plus a relative
+// hint such as "(3d)", "(5h)", "(12m)", or "(passed)".
 func expiryDisplay(expiresAt string, now time.Time) string {
 	if expiresAt == "" {
 		return "never"
@@ -670,8 +698,11 @@ func expiryDisplay(expiresAt string, now time.Time) string {
 	}
 }
 
-// ─── status ───────────────────────────────────────────────────────────
-
+// runStatusSubcommand implements `creator-server status`: it prints a summary
+// of a state directory (the creator public key, the count of registered
+// configs, and total vs. live share tokens) without starting the server.
+// Missing or unreadable state degrades to zero counts rather than failing.
+// Requires -state-dir.
 func runStatusSubcommand(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -688,6 +719,7 @@ func runStatusSubcommand(args []string) int {
 	configs, _ := readConfigEntries(filepath.Join(*stateDir, "configs.json"))
 	tokens, _ := loadRedemptionTokensFile(filepath.Join(*stateDir, "redemption-tokens.json"))
 
+	// Count tokens still usable (live or expiring soon) as "live".
 	now := time.Now().UTC()
 	live := 0
 	for _, t := range tokens {
@@ -709,8 +741,8 @@ func runStatusSubcommand(args []string) int {
 	return 0
 }
 
-// ─── small helpers ────────────────────────────────────────────────────
-
+// orDash returns s, or "-" when s is empty, so empty table cells render as a
+// placeholder.
 func orDash(s string) string {
 	if s == "" {
 		return "-"

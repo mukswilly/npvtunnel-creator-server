@@ -10,23 +10,17 @@ import (
 	"github.com/rivo/tview"
 )
 
-// setup.go is the first-run / re-run setup flow: collect domain + TLS mode,
-// write + enable the systemd unit (via the privileged `service` subcommand),
-// wait for /healthz, and gate on backing up the key. It also owns the
-// first-run-vs-steady-state decision and the adopt path that reconciles an
-// install.sh user (a unit but no console.json) without re-prompting.
-
+// setupState describes how the console should present setup on launch.
 type setupState int
 
 const (
-	setupFirstRun   setupState = iota // no deployment, no unit → run the wizard
-	setupAdopt                        // unit exists but unconfigured → reconcile
-	setupConfigured                   // deployment recorded → straight to the menu
+	setupFirstRun   setupState = iota // nothing installed yet
+	setupAdopt                        // a unit exists but this console hasn't recorded it
+	setupConfigured                   // setup already completed
 )
 
-// detectSetupState decides what the console should open on. The persisted
-// SetupComplete flag is authoritative; an existing unit (install.sh user) is
-// the corroborating signal that lets us adopt rather than re-prompt.
+// detectSetupState decides which setup path to offer: configured if settings say
+// so, adopt if a service unit already exists on disk, otherwise first run.
 func (c *console) detectSetupState() setupState {
 	if d := c.settings.Deployment; d != nil && d.SetupComplete {
 		return setupConfigured
@@ -37,8 +31,8 @@ func (c *console) detectSetupState() setupState {
 	return setupFirstRun
 }
 
-// adoptDeployment backfills the persisted deployment from an already-installed
-// unit so an install.sh user is never dropped into the wizard.
+// adoptDeployment records an already-installed service unit into settings so the
+// console treats it as configured.
 func (c *console) adoptDeployment() {
 	o, ok := adoptFromUnit(serviceUnitPath)
 	if !ok {
@@ -49,7 +43,7 @@ func (c *console) adoptDeployment() {
 	c.saveSettings()
 }
 
-// deploymentFromOpts is the pure mapping DeployOpts → persisted deployment.
+// deploymentFromOpts captures the deployment-relevant fields of DeployOpts.
 func deploymentFromOpts(o DeployOpts) *deployment {
 	return &deployment{
 		SetupComplete: true,
@@ -60,10 +54,9 @@ func deploymentFromOpts(o DeployOpts) *deployment {
 	}
 }
 
-// ─── the wizard ────────────────────────────────────────────────────────
-
+// showSetupWizard renders the hostname/TLS/email form and help text.
 func (c *console) showSetupWizard() {
-	cur := c.deploy() // prefill from current/adopted deployment (re-run case)
+	cur := c.deploy()
 	domain := cur.Domain
 	mode := cur.Mode
 	email := cur.AcmeEmail
@@ -93,9 +86,8 @@ func (c *console) showSetupWizard() {
 	c.switchTo("setup", "Set up this server", footerKeys(""), body)
 }
 
-// applySetup validates the inputs, writes + enables the unit (privileged), then
-// waits for health. When the console can't manage systemd, it degrades to
-// showing the exact commands to run.
+// applySetup validates the form and, when this console can manage the service,
+// runs the install in the background; otherwise it prints manual instructions.
 func (c *console) applySetup(domain string, mode TLSMode, email string) {
 	if domain == "" {
 		c.flash("Public hostname is required.")
@@ -125,7 +117,7 @@ func (c *console) applySetup(domain string, mode TLSMode, email string) {
 				c.flashThen("Setup failed:\n\n"+err.Error(), c.showSetupWizard)
 				return
 			}
-			// Persist only after the unit is installed + enabled.
+
 			c.settings.Deployment = deploymentFromOpts(opts)
 			c.saveSettings()
 			c.pollHealthThenFinish(opts)
@@ -133,9 +125,8 @@ func (c *console) applySetup(domain string, mode TLSMode, email string) {
 	}()
 }
 
-// runSetupCommands installs the unit then enables+starts it, in a single
-// app.Suspend so the terminal is handed over once for both (one sudo prompt at
-// most, both commands' output visible).
+// runSetupCommands installs the unit and starts it, suspending the TUI so the
+// child commands can use the terminal (e.g. for a sudo prompt).
 func (c *console) runSetupCommands(args []string) error {
 	var err error
 	c.app.Suspend(func() {
@@ -147,7 +138,7 @@ func (c *console) runSetupCommands(args []string) error {
 	return err
 }
 
-// installArgs is the pure flag list for `service install` from a deployment.
+// installArgs builds the argument list for `service install`.
 func installArgs(o DeployOpts) []string {
 	args := []string{
 		"-bin", o.BinPath,
@@ -164,8 +155,8 @@ func installArgs(o DeployOpts) []string {
 	return args
 }
 
-// setupManualInstructions is the copyable fallback when the console lacks the
-// privilege to manage systemd itself.
+// setupManualInstructions returns copy-pasteable root commands for when the
+// console cannot manage systemd itself.
 func setupManualInstructions(o DeployOpts) string {
 	return fmt.Sprintf(
 		"This console can't manage systemd here (not root, and sudo isn't\n"+
@@ -175,10 +166,8 @@ func setupManualInstructions(o DeployOpts) string {
 		o.BinPath, strings.Join(installArgs(o), " "), o.BinPath)
 }
 
-// pollHealthThenFinish waits (in the background) for the service to answer
-// /healthz, showing progress, then lands on the finish screen. Built-in TLS can
-// take a minute to obtain its first cert, so a timeout isn't treated as failure
-// — just "not answering yet".
+// pollHealthThenFinish polls the health endpoint until it answers or a deadline
+// passes, updating the screen, then shows the completion screen.
 func (c *console) pollHealthThenFinish(opts DeployOpts) {
 	url := healthURL(opts)
 	tv := tview.NewTextView().SetDynamicColors(true).
@@ -206,8 +195,8 @@ func (c *console) pollHealthThenFinish(opts DeployOpts) {
 	}()
 }
 
-// finishSetup is the terminal wizard screen: health result + the all-important
-// back-up-your-key gate.
+// finishSetup shows the post-install summary, including the creator pubkey and a
+// prominent reminder to back up the key.
 func (c *console) finishSetup(opts DeployOpts, healthy bool) {
 	status := "[green]The service is up and answering on " + healthURL(opts) + ".[-]"
 	if !healthy {

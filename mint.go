@@ -10,24 +10,18 @@ import (
 	"time"
 )
 
-// runMintSubcommand handles `creator-server mint ...`. Loads the
-// persisted creator key from the state dir, mints a V2 issuer
-// envelope addressed to the supplied recipient, and prints the
-// configId (routing key), configFp (integrity hash), and envelope
-// bytes (all base64url-no-pad) on stdout in a machine-parseable format.
+// runMintSubcommand implements `creator-server mint`: it mints one signed
+// "v2-issuer" envelope addressed to one or more recipients and prints its
+// configId, config fingerprint, and base64url bytes to stdout (optionally also
+// writing the raw bytes to a file). The envelope points recipients at this
+// server's /v1/issue endpoint for the actual config.
 //
-// Produces envelope bytes in the documented .npvs wire format;
-// envelope_test.go round-trips encode → decode → verify to assert the
-// codec is self-consistent.
-//
-// Output format on stdout (one entry per line, machine-parseable):
-//
-//	configFp <base64url-no-pad>
-//	configId <base64url-no-pad>
-//	envelope <base64url-no-pad>
-//
-// Logs (creator pubkey, recipient fingerprint, etc.) go to stderr
-// so stdout stays clean for piping.
+// Key flags: -state-dir (holds creator-key.pem, required), -issuer-url (the
+// https /v1/issue URL, required), -recipient-pubkey / -recipient-pubkeys-file
+// (one or more P-256 compressed pubkeys, at least one required), -config-id
+// (the configId to embed; generated if omitted), -out (write raw bytes), plus
+// policy flags -expires-at, -display-message, -custom-server-message, and
+// -only-mobile-network. Returns 0 on success, 2 for bad usage, 1 on failure.
 func runMintSubcommand(args []string) int {
 	fs := flag.NewFlagSet("mint", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -63,7 +57,6 @@ func runMintSubcommand(args []string) int {
 		return 2
 	}
 
-	// Validate.
 	if *stateDir == "" {
 		fmt.Fprintln(os.Stderr, "mint: -state-dir is required (path to creator-key.pem)")
 		fs.Usage()
@@ -78,8 +71,8 @@ func runMintSubcommand(args []string) int {
 		return 2
 	}
 
-	// Collect recipient pubkeys: -recipient-pubkey flags + the
-	// optional file. Dedupe by raw bytes.
+	// Collect recipient pubkeys, validating each is a 33-byte P-256 compressed
+	// key and dropping duplicates.
 	var pubkeys [][]byte
 	seen := map[string]bool{}
 	addPubkey := func(b64 string) error {
@@ -102,9 +95,8 @@ func runMintSubcommand(args []string) int {
 		pubkeys = append(pubkeys, raw)
 		return nil
 	}
-	// Each -recipient-pubkey occurrence may itself be a comma-separated
-	// list, so a single flag can carry several recipients without
-	// repeating it. (base64url has no commas, so the split is safe.)
+
+	// -recipient-pubkey may be repeated and each value may be comma-separated.
 	for _, entry := range recipientPubkeys {
 		for _, p := range strings.Split(entry, ",") {
 			if err := addPubkey(p); err != nil {
@@ -113,6 +105,7 @@ func runMintSubcommand(args []string) int {
 			}
 		}
 	}
+	// The pubkeys file holds one key per line; blank and '#' lines are skipped.
 	if *recipientPubkeysFile != "" {
 		f, err := os.Open(*recipientPubkeysFile)
 		if err != nil {
@@ -142,19 +135,13 @@ func runMintSubcommand(args []string) int {
 		return 2
 	}
 
-	// Load creator key.
 	creatorKey, _, err := loadOrCreateCreatorKey(filepath.Join(*stateDir, "creator-key.pem"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mint: load creator key:", err)
 		return 1
 	}
 
-	// Build policy. attestationLevel is always NONE: the envelope's signed
-	// policy field is NOT the attestation gate — the runtime AttestationPolicy
-	// on the configs.json entry (evaluated server-side at /v1/issue) is. A
-	// recipient can't verify device attestation locally, so the app performs
-	// none and refuses any non-NONE level; stamping one here would only break
-	// import. Same reasoning as redeem.go, which mints with a nil (NONE) policy.
+	// Build the envelope policy from the flags; attestation level is always NONE.
 	pol := envelopePolicy{
 		OnlyMobileNetwork:   *onlyMobile,
 		AttestationLevel:    "NONE",
@@ -163,7 +150,7 @@ func runMintSubcommand(args []string) int {
 		CustomServerMessage: *customServerMessage,
 	}
 
-	// Parse expiresAt early so we fail fast on bad input.
+	// Validate the expiry format only when one was given.
 	if *expiresAtStr != "" {
 		if _, err := time.Parse(time.RFC3339, *expiresAtStr); err != nil {
 			fmt.Fprintln(os.Stderr, "mint: -expires-at must be RFC3339:", err)
@@ -171,8 +158,7 @@ func runMintSubcommand(args []string) int {
 		}
 	}
 
-	// Optional fixed configId (from `config add`) so the direct-mint path
-	// and the registered config line up. Absent → minter generates one.
+	// Decode -config-id when supplied; leaving it nil lets the mint generate one.
 	var configIDBytes []byte
 	if *configIDFlag != "" {
 		decoded, derr := b64url.DecodeString(*configIDFlag)
@@ -195,7 +181,6 @@ func runMintSubcommand(args []string) int {
 		return 1
 	}
 
-	// Optional file output.
 	if *outFile != "" {
 		if err := os.WriteFile(*outFile, res.EnvelopeBytes, 0o600); err != nil {
 			fmt.Fprintln(os.Stderr, "mint: write -out file:", err)
@@ -205,16 +190,11 @@ func runMintSubcommand(args []string) int {
 			len(res.EnvelopeBytes), *outFile)
 	}
 
-	// Machine-parseable stdout. configId is the routing key the operator
-	// pastes into configs.json. configFp is informational —
-	// it's SHA-256(envelopeBytes), useful for verifying integrity of the
-	// envelope file in transit but no longer used for issuer-side routing.
 	configIDB64 := b64url.EncodeToString(res.ConfigID)
 	fmt.Printf("configId %s\n", configIDB64)
 	fmt.Printf("configFp %s\n", res.ConfigFp)
 	fmt.Printf("envelope %s\n", b64url.EncodeToString(res.EnvelopeBytes))
 
-	// Friendly stderr summary for human operators.
 	fmt.Fprintf(os.Stderr,
 		"\n--- mint summary ---\n"+
 			"recipients:    %d\n"+
@@ -233,11 +213,14 @@ func runMintSubcommand(args []string) int {
 	return 0
 }
 
-// multiStringFlag is a flag.Value that collects all uses of the flag
-// into a slice. Standard library doesn't expose this; trivial impl.
+// multiStringFlag is a flag.Value that accumulates a string each time its flag
+// is repeated on the command line.
 type multiStringFlag []string
 
+// String renders the accumulated values as a comma-separated list.
 func (m *multiStringFlag) String() string { return strings.Join(*m, ",") }
+
+// Set appends one occurrence of the flag's value.
 func (m *multiStringFlag) Set(v string) error {
 	*m = append(*m, v)
 	return nil

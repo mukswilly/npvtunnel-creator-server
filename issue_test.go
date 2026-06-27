@@ -15,21 +15,14 @@ import (
 	"testing"
 )
 
-// TestIssueRoundTrip exercises the full POST /v1/issue happy-path:
-//
-//  1. Generate a fresh device P-256 keypair.
-//  2. Sign a canonical IssueRequest with the device key.
-//  3. POST it to a test server.
-//  4. Verify the response's receiptSig against the server's creator pubkey.
-//
-// This exercises the /v1/issue wire-protocol foundation — proves the
-// signature canonicalization matches the documented wire format.
+// TestIssueRoundTrip verifies a correctly signed issue request returns the config plus a
+// creator-signed receipt: it checks the receipt signature verifies against the creator pubkey
+// and that the returned config is valid JSON of an expected type.
 func TestIssueRoundTrip(t *testing.T) {
 	srv, state, ts := newTestServer(t)
 	defer ts.Close()
 	_ = srv
 
-	// Device side: generate a signing key and a (config_fp, request_nonce).
 	devPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("gen device key: %v", err)
@@ -42,6 +35,7 @@ func TestIssueRoundTrip(t *testing.T) {
 	req := IssueRequest{
 		V:        1,
 		DevicePk: devPkB64,
+		// "NONE" attestation: no hardware attestation is required for issuance.
 		Attestation: AttestationBlob{
 			Platform: "NONE",
 			Token:    "",
@@ -52,7 +46,6 @@ func TestIssueRoundTrip(t *testing.T) {
 	}
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
-	// Send.
 	body, _ := json.Marshal(req)
 	httpResp, err := http.Post(ts.URL+"/v1/issue", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -69,14 +62,10 @@ func TestIssueRoundTrip(t *testing.T) {
 		t.Fatalf("parse response: %v (body=%s)", err, respBytes)
 	}
 
-	// Validate response shape — current wire format.
 	if resp.ConfigB64 == "" || resp.ExpiresAt == "" || resp.ReceiptSig == "" {
 		t.Fatalf("response missing required fields: %+v", resp)
 	}
 
-	// Verify the receipt signature against the creator pubkey. The
-	// signing input covers ConfigB64 verbatim, so the recipient verifies
-	// the bytes-on-the-wire before decoding the inner ConfigBody.
 	creatorPub := &state.CreatorSigningKey.PublicKey
 	receiptInput := issueReceiptSigningInput(req.DevicePk, req.RequestNonce, &resp)
 	receiptSig, err := b64url.DecodeString(resp.ReceiptSig)
@@ -87,9 +76,6 @@ func TestIssueRoundTrip(t *testing.T) {
 		t.Fatalf("receipt signature did not verify")
 	}
 
-	// And the embedded ConfigBody parses as JSON. The stub path produces
-	// a minimal V2RAY-typed body; this asserts the wire path is intact
-	// end-to-end without depending on a configs.json.
 	configBytes, err := b64url.DecodeString(resp.ConfigB64)
 	if err != nil {
 		t.Fatalf("decode configB64: %v", err)
@@ -103,8 +89,7 @@ func TestIssueRoundTrip(t *testing.T) {
 	}
 }
 
-// TestIssueRejectsBadSignature confirms that tampering with any field after
-// signing invalidates the signature.
+// TestIssueRejectsBadSignature verifies a request whose body is altered after signing is rejected with 401 bad_signature.
 func TestIssueRejectsBadSignature(t *testing.T) {
 	_, _, ts := newTestServer(t)
 	defer ts.Close()
@@ -122,7 +107,8 @@ func TestIssueRejectsBadSignature(t *testing.T) {
 		RequestNonce: b64url.EncodeToString(randomBytes(t, 16)),
 	}
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
-	// Tamper after signing.
+
+	// Mutate a signed field after signing so the signature no longer covers the request.
 	req.ConfigID = b64url.EncodeToString(randomBytes(t, 32))
 
 	body, _ := json.Marshal(req)
@@ -140,7 +126,7 @@ func TestIssueRejectsBadSignature(t *testing.T) {
 	}
 }
 
-// TestIssueRejectsMissingField confirms that absent required fields yield 400.
+// TestIssueRejectsMissingField verifies a request missing required fields returns 400.
 func TestIssueRejectsMissingField(t *testing.T) {
 	_, _, ts := newTestServer(t)
 	defer ts.Close()
@@ -156,7 +142,7 @@ func TestIssueRejectsMissingField(t *testing.T) {
 	}
 }
 
-// TestCreatorPubKeyEndpoint exposes the server's signing pubkey.
+// TestCreatorPubKeyEndpoint verifies the creator-pubkey endpoint returns the server's compressed creator public key.
 func TestCreatorPubKeyEndpoint(t *testing.T) {
 	_, state, ts := newTestServer(t)
 	defer ts.Close()
@@ -178,10 +164,7 @@ func TestCreatorPubKeyEndpoint(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// helpers
-// ──────────────────────────────────────────────────────────────────
-
+// newTestServer spins up an in-memory server over fresh state with logging discarded.
 func newTestServer(t *testing.T) (*Server, *State, *httptest.Server) {
 	t.Helper()
 	state := NewState()
@@ -190,6 +173,7 @@ func newTestServer(t *testing.T) (*Server, *State, *httptest.Server) {
 	return srv, state, httptest.NewServer(srv.Router())
 }
 
+// randomBytes returns n cryptographically random bytes.
 func randomBytes(t *testing.T, n int) []byte {
 	t.Helper()
 	b := make([]byte, n)
@@ -199,6 +183,7 @@ func randomBytes(t *testing.T, n int) []byte {
 	return b
 }
 
+// compressP256ToB64 encodes a P-256 public key as a base64url 33-byte compressed point (0x02/0x03 prefix + left-padded X).
 func compressP256ToB64(t *testing.T, pub *ecdsa.PublicKey) string {
 	t.Helper()
 	xBytes := pub.X.Bytes()
@@ -212,6 +197,7 @@ func compressP256ToB64(t *testing.T, pub *ecdsa.PublicKey) string {
 	return b64url.EncodeToString(out)
 }
 
+// signWithP256 signs SHA-256(msg) with the key and returns the base64url-encoded 64-byte r||s signature.
 func signWithP256(t *testing.T, priv *ecdsa.PrivateKey, msg []byte) string {
 	t.Helper()
 	hash := sha256.Sum256(msg)

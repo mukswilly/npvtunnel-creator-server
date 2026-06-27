@@ -9,11 +9,10 @@ import (
 	"time"
 )
 
-// newShareLink generates a redemption token, registers it against configID,
-// and returns the token + npvtunnel://join link. Inputs must already be
-// validated (configID registered, https URL, redemptions > 0); this is the
-// single token-builder shared by the CLI subcommand and the console so the
-// token/link format can't diverge.
+// newShareLink generates a random redemption token, persists it to state
+// bound to configID (with its redemption budget, optional expiry, and label),
+// and returns the token plus the join link that carries it. It does not verify
+// that configID is registered; callers are expected to check first.
 func newShareLink(state *State, configID, redemptionURL string, redemptions int, expiresAt, label string) (token, joinLink string, err error) {
 	tokenBytes := make([]byte, 16)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -33,34 +32,25 @@ func newShareLink(state *State, configID, redemptionURL string, redemptions int,
 	return token, joinShareLink(redemptionURL, token), nil
 }
 
-// joinShareLink formats the npvtunnel://join deep link. The redemption URL is
-// base64'd so its colons/slashes don't fight the URI parser; the token is
-// already URL-safe base64url.
+// joinShareLink builds the join link a recipient opens to redeem: it encodes
+// the redemption URL (base64url) and the token into the query so the recipient
+// knows where to POST and with what token.
 func joinShareLink(redemptionURL, token string) string {
 	return fmt.Sprintf("npvtunnel://join?u=%s&t=%s",
 		b64url.EncodeToString([]byte(redemptionURL)), token)
 }
 
-// runMintShareLinkSubcommand handles `creator-server mint-share-link ...`.
+// runMintShareLinkSubcommand implements `creator-server mint-share-link`: it
+// mints a redemption token for an already-registered config and prints the
+// token, its configId, and the shareable join link. The config must exist in
+// configs.json, else the command fails so a mistyped id surfaces here rather
+// than at a recipient's first connect.
 //
-// Generates a random redemption token, validates that the named
-// configId is already registered in configs.json, and appends a new
-// entry to redemption-tokens.json. Outputs the
-// `npvtunnel://join?u=<...>&t=<token>` deep link on stdout for the
-// operator to paste into their channel.
-//
-// Share-link distribution: instead of posting a static config file in
-// a public channel, the creator runs this command and posts its URL
-// output. Recipients tap the URL, their app POSTs its pubkey to
-// /v1/redeem and gets back a fully sealed per-recipient envelope.
-//
-// Output format on stdout (one entry per line, machine-parseable):
-//
-//	token       <random base64url>
-//	configId    <as supplied via -config-id, echoed back>
-//	join-link   npvtunnel://join?u=<base64url(redemptionUrl)>&t=<token>
-//
-// Friendly stderr summary for human operators.
+// Flags: -state-dir (required), -config-id (the registered configId, required),
+// -redemption-url (the externally reachable https /v1/redeem URL, required),
+// -redemptions (how many redemptions the token allows, default 100),
+// -expires-in (token lifetime; 0 means no expiry), and -label (an audit note).
+// Returns 0 on success, 2 for bad usage, 1 on failure.
 func runMintShareLinkSubcommand(args []string) int {
 	fs := flag.NewFlagSet("mint-share-link", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -93,7 +83,6 @@ func runMintShareLinkSubcommand(args []string) int {
 		return 2
 	}
 
-	// Validate inputs.
 	if *stateDir == "" {
 		fmt.Fprintln(os.Stderr, "mint-share-link: -state-dir is required")
 		fs.Usage()
@@ -116,18 +105,14 @@ func runMintShareLinkSubcommand(args []string) int {
 		return 2
 	}
 
-	// Open the existing state directory. This loads configs.json so
-	// we can validate the configId the operator named.
 	state, err := NewStateWithDir(*stateDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mint-share-link: load state:", err)
 		return 1
 	}
 
-	// Hard-fail when configId isn't in configs.json. The configId is
-	// the routing key — recipients send it back to /v1/issue. If the
-	// share link points at a configId the issuer doesn't recognize,
-	// every recipient's connect 404s — exactly the operator-typo bug this guards against.
+	// Require a loaded registry and a matching entry before minting, so a bad
+	// configId fails fast instead of producing a dead share link.
 	if !state.HasConfigRegistry() {
 		fmt.Fprintln(os.Stderr,
 			"mint-share-link: no configs.json registry loaded. "+
@@ -143,8 +128,7 @@ func runMintShareLinkSubcommand(args []string) int {
 		return 1
 	}
 
-	// Compute expiry, then register via the shared token-builder (same code
-	// path the console uses).
+	// Translate the relative -expires-in into an absolute RFC3339 timestamp.
 	expiresAt := ""
 	if *expiresIn > 0 {
 		expiresAt = time.Now().UTC().Add(*expiresIn).Format(time.RFC3339)
@@ -155,12 +139,10 @@ func runMintShareLinkSubcommand(args []string) int {
 		return 1
 	}
 
-	// Machine-parseable stdout.
 	fmt.Printf("token       %s\n", token)
 	fmt.Printf("configId    %s\n", *configID)
 	fmt.Printf("join-link   %s\n", joinLink)
 
-	// Friendly stderr summary.
 	expiryStr := "no expiry"
 	if expiresAt != "" {
 		expiryStr = expiresAt + " (in " + expiresIn.String() + ")"
@@ -177,13 +159,12 @@ func runMintShareLinkSubcommand(args []string) int {
 	return 0
 }
 
-// runRevokeTokenSubcommand handles `creator-server revoke-token ...`.
-//
-// Removes a token from redemption-tokens.json. A revoked token's
-// future redemption attempts get 404 token_not_found. Existing
-// envelopes already minted for past redemptions of this token still
-// work — revocation kills the share link, not the per-recipient
-// configs that were already issued through it.
+// runRevokeTokenSubcommand implements `creator-server revoke-token` (also the
+// "token revoke" verb): it removes a redemption token from
+// -state-dir/redemption-tokens.json so it can no longer be redeemed. It fails
+// if the token is not registered. Flags: -state-dir (required) and -token (the
+// token string to revoke, required). Returns 0 on success, 2 for bad usage, 1
+// on failure.
 func runRevokeTokenSubcommand(args []string) int {
 	fs := flag.NewFlagSet("revoke-token", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)

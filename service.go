@@ -11,51 +11,38 @@ import (
 	"time"
 )
 
-// service.go is the on-box server-lifecycle core: the canonical systemd unit
-// generator and the pure parsers the management console + the root `service`
-// subcommand build on. Everything here is pure (no exec, no root, no systemd)
-// so it unit-tests on any OS; the actual systemctl/journalctl shell-outs live
-// in the serviceController (added alongside, exercised via a fake in tests).
-//
-// One canonical unit template lives in renderUnitFile. install.sh shells out to
-// `creator-server service install` rather than carrying its own heredoc, and
-// the committed systemd/creator-server.service is generated from the same
-// function — so the three can't drift (they did before: the committed unit had
-// PrivateDevices / ProtectKernelTunables / ProtectControlGroups the installer
-// omitted).
-
 const (
-	// serviceName is the systemd unit name (creator-server.service).
+	// serviceName is the systemd unit name used by all systemctl/journalctl calls.
 	serviceName = "creator-server"
-	// serviceUnitPath is where the unit is installed. install.sh and the
-	// console both write here.
+
+	// serviceUnitPath is the on-disk location of the installed systemd unit file.
 	serviceUnitPath = "/etc/systemd/system/creator-server.service"
-	// serviceUser is the unprivileged system account the issuer runs as. The
-	// state dir is owned by it; the console must NOT create root-owned state
-	// (there is no chown in the tree), which is why the console stays this
-	// user and only the `service` subcommand needs root.
+
+	// serviceUser is the unprivileged account the unit runs the server as.
 	serviceUser = "creator"
-	// defaultBinPath is where install.sh places the binary; the unit's
-	// ExecStart points here.
+
+	// defaultBinPath is the assumed install location of the server binary used in ExecStart.
 	defaultBinPath = "/usr/local/bin/creator-server"
-	// defaultProxyAddr is the loopback bind for reverse-proxy mode. The proxy
-	// (Caddy/nginx) terminates TLS in front of it.
+
+	// defaultProxyAddr is the loopback bind address used in proxy TLS mode, where an
+	// external reverse proxy terminates TLS and forwards to this address.
 	defaultProxyAddr = "127.0.0.1:8443"
 )
 
-// TLSMode is how HTTPS is terminated for the issuer.
+// TLSMode selects how the deployed server obtains and terminates TLS.
 type TLSMode int
 
 const (
-	// TLSModeBuiltin: the binary obtains + renews its own Let's Encrypt cert
-	// (binds :443, answers ACME on :80, derives -public-issuer-url). Needs
-	// CAP_NET_BIND_SERVICE since it runs unprivileged on privileged ports.
+	// TLSModeBuiltin has the server obtain certificates directly via Let's Encrypt
+	// and bind the public HTTPS port itself.
 	TLSModeBuiltin TLSMode = iota
-	// TLSModeProxy: the binary serves plain HTTP on loopback; an external
-	// reverse proxy terminates TLS. No privileged ports, no caps.
+
+	// TLSModeProxy has the server listen in plaintext on a loopback address while an
+	// external reverse proxy terminates TLS and forwards requests to it.
 	TLSModeProxy
 )
 
+// String returns the lowercase mode name ("builtin" or "proxy").
 func (m TLSMode) String() string {
 	if m == TLSModeProxy {
 		return "proxy"
@@ -63,8 +50,8 @@ func (m TLSMode) String() string {
 	return "builtin"
 }
 
-// parseTLSMode maps the persisted/flag string back to a TLSMode. Unknown
-// values fall back to builtin (the simplest, no-proxy default).
+// parseTLSMode maps a mode string to a TLSMode, defaulting to builtin for any
+// value other than "proxy" (case-insensitive).
 func parseTLSMode(s string) TLSMode {
 	if strings.EqualFold(strings.TrimSpace(s), "proxy") {
 		return TLSModeProxy
@@ -72,21 +59,18 @@ func parseTLSMode(s string) TLSMode {
 	return TLSModeBuiltin
 }
 
-// DeployOpts is everything needed to render a unit and to describe a running
-// deployment. It is what the setup wizard collects, what gets persisted in
-// console.json, and what the adopt path recovers from an existing unit.
+// DeployOpts captures the inputs needed to render and install the systemd unit.
 type DeployOpts struct {
-	BinPath   string  // path to the creator-server binary (ExecStart program)
-	StateDir  string  // -state-dir
-	Mode      TLSMode // builtin (Let's Encrypt) | proxy (reverse proxy)
-	Domain    string  // public hostname recipients reach
-	AcmeEmail string  // optional Let's Encrypt contact (builtin only)
-	Addr      string  // proxy-mode bind; default defaultProxyAddr
+	BinPath   string  // path to the server binary used in ExecStart
+	StateDir  string  // server state directory (-state-dir)
+	Mode      TLSMode // TLS termination strategy
+	Domain    string  // public hostname for builtin TLS and derived URLs
+	AcmeEmail string  // optional Let's Encrypt contact email (builtin TLS)
+	Addr      string  // loopback bind address (proxy mode)
 }
 
-// withDefaults fills the structural defaults so callers (and renderUnitFile)
-// don't have to. Domain is intentionally left as-is — it's operator input with
-// no sensible default.
+// withDefaults returns a copy of o with empty fields filled from package defaults.
+// The proxy bind address is only defaulted in proxy mode.
 func (o DeployOpts) withDefaults() DeployOpts {
 	if o.BinPath == "" {
 		o.BinPath = defaultBinPath
@@ -100,7 +84,7 @@ func (o DeployOpts) withDefaults() DeployOpts {
 	return o
 }
 
-// PublicURL is the https origin recipients hit (no path).
+// PublicURL returns the https base URL for the configured domain, or "" if unset.
 func (o DeployOpts) PublicURL() string {
 	if o.Domain == "" {
 		return ""
@@ -108,9 +92,7 @@ func (o DeployOpts) PublicURL() string {
 	return "https://" + o.Domain
 }
 
-// IssuerURL / RedeemURL derive the per-endpoint URLs from the domain so the
-// console never makes a creator retype them (a wrong redemption URL otherwise
-// fails silently at the recipient's first connect).
+// IssuerURL returns the public URL of the issue endpoint, or "" if no domain is set.
 func (o DeployOpts) IssuerURL() string {
 	if o.Domain == "" {
 		return ""
@@ -118,6 +100,7 @@ func (o DeployOpts) IssuerURL() string {
 	return o.PublicURL() + "/v1/issue"
 }
 
+// RedeemURL returns the public URL of the redeem endpoint, or "" if no domain is set.
 func (o DeployOpts) RedeemURL() string {
 	if o.Domain == "" {
 		return ""
@@ -125,21 +108,18 @@ func (o DeployOpts) RedeemURL() string {
 	return o.PublicURL() + "/v1/redeem"
 }
 
-// execStartLine builds the single-line ExecStart for the unit. Single-line
-// (vs the committed unit's backslash-continued form) keeps it trivial to parse
-// back on the adopt path; extractExecStartLine still handles continuations for
-// units written by hand or by older installers.
+// execStartLine builds the ExecStart command line for the unit, with flags that
+// depend on the TLS mode.
 func (o DeployOpts) execStartLine() string {
 	o = o.withDefaults()
 	switch o.Mode {
 	case TLSModeProxy:
-		// Loopback HTTP; the proxy supplies the public URL, so the binary
-		// needs it told explicitly for /v1/redeem to mint correct envelopes.
+		// Plaintext loopback listener plus the externally reachable issuer URL so
+		// issued payloads advertise the public address fronted by the proxy.
 		return fmt.Sprintf("%s -addr %s -state-dir %s -public-issuer-url %s",
 			o.BinPath, o.Addr, o.StateDir, o.IssuerURL())
 	default:
-		// Built-in TLS: -domain drives autocert and derives the issuer URL
-		// inside main(), so we don't pass -public-issuer-url here.
+		// Builtin TLS: the server manages certificates for the given domain itself.
 		line := fmt.Sprintf("%s -state-dir %s -domain %s",
 			o.BinPath, o.StateDir, o.Domain)
 		if o.AcmeEmail != "" {
@@ -149,10 +129,10 @@ func (o DeployOpts) execStartLine() string {
 	}
 }
 
-// renderUnitFile is the single source of truth for the systemd unit. Both TLS
-// modes share the hardening block; only ExecStart and the two capability lines
-// differ (built-in TLS binds privileged ports, so it needs
-// CAP_NET_BIND_SERVICE — proxy mode leaves both capability sets empty).
+// renderUnitFile produces the full text of the systemd unit for the given options.
+// In builtin TLS mode the unprivileged service must bind a privileged port, so it
+// is granted CAP_NET_BIND_SERVICE; in proxy mode it binds only a high loopback
+// port and needs no extra capabilities.
 func renderUnitFile(o DeployOpts) string {
 	o = o.withDefaults()
 	capBounding, capAmbient := "", ""
@@ -191,42 +171,36 @@ WantedBy=multi-user.target
 `, serviceUser, serviceUser, o.execStartLine(), o.StateDir, capBounding, capAmbient)
 }
 
-// ServiceStatus is the parsed result of `systemctl show creator-server -p ...`.
-// Pure data so the lifecycle screen can render it (and tests can fabricate it)
-// without a live systemd.
+// ServiceStatus is a parsed snapshot of a unit's runtime state, distilled from
+// the properties reported by "systemctl show".
 type ServiceStatus struct {
-	Loaded      bool      // LoadState == loaded
-	Active      bool      // ActiveState == active
-	ActiveState string    // active | inactive | failed | activating | ...
-	SubState    string    // running | dead | failed | ...
-	MainPID     int       // 0 when not running
-	Since       time.Time // ActiveEnterTimestamp; zero when unknown/inactive
-	Result      string    // success | exit-code | ... (last run result)
+	Loaded      bool      // unit file is loaded (LoadState == "loaded")
+	Active      bool      // unit is active (ActiveState == "active")
+	ActiveState string    // raw ActiveState (e.g. "active", "failed", "inactive")
+	SubState    string    // raw SubState (e.g. "running", "dead", "failed")
+	MainPID     int       // PID of the main process, 0 if none
+	Since       time.Time // time the unit entered the active state
+	Result      string    // last exit result (e.g. "success", "exit-code")
 }
 
-// Running reports the healthy steady state: active and actually running.
+// Running reports whether the unit is active and its main process is running.
 func (s ServiceStatus) Running() bool { return s.Active && s.SubState == "running" }
 
-// Failed reports a crashed/failed unit (so the screen can flag it red).
+// Failed reports whether the unit is in a failed active- or sub-state.
 func (s ServiceStatus) Failed() bool {
 	return s.ActiveState == "failed" || s.SubState == "failed"
 }
 
-// systemctlShowProps is the property set the controller queries; parsing keys
-// off exactly these. Kept next to the parser so the two stay in sync.
+// systemctlShowProps lists the unit properties requested from "systemctl show".
 var systemctlShowProps = []string{
 	"LoadState", "ActiveState", "SubState", "MainPID", "ActiveEnterTimestamp", "Result",
 }
 
-// systemdTimestampLayout matches systemd's human ActiveEnterTimestamp, e.g.
-// "Wed 2026-06-21 10:03:21 UTC". Parsing is best-effort: an unparseable or
-// empty value leaves Since zero (uptime shown as unknown), never an error.
+// systemdTimestampLayout is the time.Parse layout for systemd's timestamp format.
 const systemdTimestampLayout = "Mon 2006-01-02 15:04:05 MST"
 
-// parseServiceStatus parses the key=value output of
-// `systemctl show creator-server -p <systemctlShowProps...>`. Missing keys are
-// tolerated (older systemd, masked unit) — the zero value reads as
-// "not loaded / inactive", which is the safe display.
+// parseServiceStatus parses the KEY=VALUE lines emitted by "systemctl show" into
+// a ServiceStatus, ignoring lines that lack an "=" separator.
 func parseServiceStatus(showOutput string) ServiceStatus {
 	kv := map[string]string{}
 	for _, line := range strings.Split(showOutput, "\n") {
@@ -255,11 +229,9 @@ func parseServiceStatus(showOutput string) ServiceStatus {
 	return st
 }
 
-// extractExecStartLine pulls the ExecStart command out of a raw unit file,
-// joining systemd's backslash line-continuations and collapsing whitespace.
-// Returns "" when there's no ExecStart (e.g. a stub/masked unit). Used by the
-// adopt path so a creator who installed via install.sh (and has a unit but no
-// console.json) is reconciled instead of re-prompted.
+// extractExecStartLine returns the ExecStart command from unit text as a single
+// space-collapsed line, joining backslash line continuations. It returns "" when
+// no ExecStart= directive is found.
 func extractExecStartLine(unitText string) string {
 	lines := strings.Split(unitText, "\n")
 	for i := 0; i < len(lines); i++ {
@@ -268,6 +240,7 @@ func extractExecStartLine(unitText string) string {
 			continue
 		}
 		cmd := strings.TrimPrefix(trimmed, "ExecStart=")
+		// Append following lines while the command ends with a continuation backslash.
 		for strings.HasSuffix(strings.TrimSpace(cmd), "\\") {
 			cmd = strings.TrimSuffix(strings.TrimSpace(cmd), "\\")
 			i++
@@ -281,10 +254,10 @@ func extractExecStartLine(unitText string) string {
 	return ""
 }
 
-// parseExecStart recovers DeployOpts from an ExecStart command line (as
-// produced by extractExecStartLine). Mode is inferred from the flags present:
-// -domain → built-in TLS; -public-issuer-url (no -domain) → reverse proxy.
-// Accepts both "-flag value" and "-flag=value" forms.
+// parseExecStart reconstructs DeployOpts from an ExecStart command line: the first
+// field is the binary path and the rest are recognized flags. The presence of
+// -domain implies builtin TLS; its absence implies proxy mode. When only a
+// -public-issuer-url is present, the domain is recovered from that URL.
 func parseExecStart(execStart string) DeployOpts {
 	fields := normalizeFlagTokens(strings.Fields(execStart))
 	var o DeployOpts
@@ -293,6 +266,7 @@ func parseExecStart(execStart string) DeployOpts {
 		o.BinPath = fields[0]
 	}
 	for i := 1; i < len(fields); i++ {
+		// val consumes and returns the next token as the current flag's value.
 		val := func() string {
 			if i+1 < len(fields) {
 				i++
@@ -311,10 +285,10 @@ func parseExecStart(execStart string) DeployOpts {
 		case "-addr", "--addr":
 			o.Addr = val()
 		case "-public-issuer-url", "--public-issuer-url":
-			if o.Domain == "" { // -domain wins if both somehow present
+			if o.Domain == "" {
 				o.Domain = domainFromURL(val())
 			} else {
-				val()
+				val() // consume the value even when an explicit domain wins
 			}
 		}
 	}
@@ -326,8 +300,9 @@ func parseExecStart(execStart string) DeployOpts {
 	return o.withDefaults()
 }
 
-// normalizeFlagTokens splits "-flag=value" tokens into "-flag" "value" so the
-// parser only has to handle the space-separated form.
+// normalizeFlagTokens splits "-flag=value" tokens into separate "-flag" and
+// "value" tokens so the parser can treat both flag syntaxes uniformly. Non-flag
+// tokens pass through unchanged.
 func normalizeFlagTokens(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, tok := range in {
@@ -342,8 +317,8 @@ func normalizeFlagTokens(in []string) []string {
 	return out
 }
 
-// domainFromURL extracts the bare host from an https URL, dropping scheme and
-// any path (e.g. https://issuer.example/v1/issue → issuer.example).
+// domainFromURL extracts the host portion of a URL by stripping the scheme and
+// any path. The input need not be a full URL.
 func domainFromURL(u string) string {
 	u = strings.TrimPrefix(u, "https://")
 	u = strings.TrimPrefix(u, "http://")
@@ -353,9 +328,8 @@ func domainFromURL(u string) string {
 	return u
 }
 
-// adoptFromUnit recovers DeployOpts from an installed unit file (an install.sh
-// user who has a unit but no console.json). Returns ok=false when the file is
-// absent or carries no ExecStart.
+// adoptFromUnit reads an installed unit file and recovers the DeployOpts from its
+// ExecStart line. The bool is false if the file cannot be read or has no ExecStart.
 func adoptFromUnit(unitPath string) (DeployOpts, bool) {
 	data, err := os.ReadFile(unitPath)
 	if err != nil {
@@ -368,70 +342,63 @@ func adoptFromUnit(unitPath string) (DeployOpts, bool) {
 	return parseExecStart(line), true
 }
 
-// ─── service control surface ───────────────────────────────────────────
-//
-// serviceController is the injectable seam between the console / `service`
-// subcommand and systemd. The console holds one to render read-only status and
-// logs in-process (those work unprivileged); the privileged verbs are reached
-// by shelling `sudo creator-server service <verb>`, which builds a real
-// systemctlController and calls the same methods as root. Tests use
-// fakeController (in service_test.go) so none of this needs root or systemd.
+// serviceController abstracts the service-manager operations used by the service
+// subcommand, allowing the systemctl implementation to be substituted in tests.
 type serviceController interface {
-	// UnitExists reports whether the systemd unit file is present (used by the
-	// adopt path to recognize an install.sh user).
+	// UnitExists reports whether the unit file is present on disk.
 	UnitExists() bool
-	// Install writes the unit file and runs `daemon-reload`. Root-only.
+
+	// Install writes the unit file and reloads the manager so it is picked up.
 	Install(unit string) error
-	// EnableNow runs `systemctl enable --now`. Root-only.
+
+	// EnableNow enables the unit to start at boot and starts it immediately.
 	EnableNow() error
-	// Start / Stop / Restart map to the obvious systemctl verbs. Root-only.
+
 	Start() error
 	Stop() error
 	Restart() error
-	// Status parses `systemctl show`. Works unprivileged.
+
+	// Status returns a parsed snapshot of the unit's current state.
 	Status() (ServiceStatus, error)
-	// Logs returns the last `lines` journal entries (bounded, non-blocking —
-	// never `journalctl -f`, which would freeze the tview event loop).
+
+	// Logs returns up to the last n log lines for the unit.
 	Logs(lines int) ([]string, error)
 }
 
-// systemctlController is the real serviceController — the one place that shells
-// out to systemctl/journalctl. Deliberately thin: it formats args and hands the
-// bytes to the pure parsers in this file, so the only CI-untestable surface is
-// the exec calls themselves.
+// systemctlController drives the service via the systemctl and journalctl binaries.
 type systemctlController struct {
-	name     string // unit name, e.g. "creator-server"
-	unitPath string // /etc/systemd/system/creator-server.service
+	name     string // unit name passed to systemctl/journalctl
+	unitPath string // on-disk path of the unit file
 }
 
+// newSystemctlController returns a controller bound to the package's unit name and path.
 func newSystemctlController() *systemctlController {
 	return &systemctlController{name: serviceName, unitPath: serviceUnitPath}
 }
 
+// UnitExists reports whether the unit file exists on disk.
 func (c *systemctlController) UnitExists() bool {
 	_, err := os.Stat(c.unitPath)
 	return err == nil
 }
 
+// Install writes the unit file with 0644 permissions and runs daemon-reload so
+// systemd picks up the new or changed unit.
 func (c *systemctlController) Install(unit string) error {
-	// Units carry no secrets; 0644 (world-readable) matches systemd convention
-	// and what install.sh produced. NOTE: this writes ONLY the unit file — it
-	// never touches the state dir, so a root-run `service install` can't leave
-	// root-owned state the creator-user service then can't read.
 	if err := os.WriteFile(c.unitPath, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write unit %s: %w", c.unitPath, err)
 	}
-	// daemon-reload BEFORE any enable/start so systemd sees the new unit.
 	return c.run("daemon-reload")
 }
 
+// EnableNow enables the unit for boot and starts it in a single systemctl call.
 func (c *systemctlController) EnableNow() error { return c.run("enable", "--now", c.name) }
 func (c *systemctlController) Start() error     { return c.run("start", c.name) }
 func (c *systemctlController) Stop() error      { return c.run("stop", c.name) }
 func (c *systemctlController) Restart() error   { return c.run("restart", c.name) }
 
-// run executes `systemctl <args...>` and folds stderr into the error so a
-// failure (e.g. "must be root") surfaces a usable message.
+// run executes systemctl with the given arguments, wrapping any failure with the
+// combined output for diagnostics.
 func (c *systemctlController) run(args ...string) error {
 	out, err := exec.Command("systemctl", args...).CombinedOutput()
 	if err != nil {
@@ -441,9 +408,8 @@ func (c *systemctlController) run(args ...string) error {
 	return nil
 }
 
+// Status queries the unit's properties via "systemctl show" and parses them.
 func (c *systemctlController) Status() (ServiceStatus, error) {
-	// `systemctl show` exits 0 even for unknown units (it prints defaults), so
-	// a non-nil error here is a real failure (systemctl absent, not systemd).
 	out, err := exec.Command("systemctl", "show", c.name,
 		"--property="+strings.Join(systemctlShowProps, ",")).Output()
 	if err != nil {
@@ -452,12 +418,12 @@ func (c *systemctlController) Status() (ServiceStatus, error) {
 	return parseServiceStatus(string(out)), nil
 }
 
+// Logs returns up to the last n journal lines for the unit, defaulting to 100 when
+// n is non-positive. It returns a nil slice when the journal is empty.
 func (c *systemctlController) Logs(lines int) ([]string, error) {
 	if lines <= 0 {
 		lines = 100
 	}
-	// -o cat: message only (no timestamp/host noise); --no-pager + -n N: a
-	// bounded tail that returns immediately. NEVER -f.
 	out, err := exec.Command("journalctl", "-u", c.name,
 		"-n", strconv.Itoa(lines), "--no-pager", "-o", "cat").CombinedOutput()
 	if err != nil {
@@ -471,15 +437,11 @@ func (c *systemctlController) Logs(lines int) ([]string, error) {
 	return strings.Split(trimmed, "\n"), nil
 }
 
+// Compile-time check that systemctlController satisfies serviceController.
 var _ serviceController = (*systemctlController)(nil)
 
-// ─── privilege detection ───────────────────────────────────────────────
-
-// canManageSystemd reports whether this process can run the privileged service
-// verbs — either it's already root, or `sudo -n` works without a password
-// prompt (cached creds / NOPASSWD). On non-Linux (the Windows dev box) both are
-// false, which is correct: server management is Linux-only. This is an exec
-// seam; the console caches the result once at construction.
+// canManageSystemd reports whether the current process has the privileges needed
+// to manage units: either it is running as root, or passwordless sudo is available.
 func canManageSystemd() bool {
 	if os.Geteuid() == 0 {
 		return true
@@ -487,10 +449,8 @@ func canManageSystemd() bool {
 	return sudoNonInteractiveOK()
 }
 
-// sudoNonInteractiveOK probes whether sudo can elevate WITHOUT prompting (so we
-// never fire a password prompt from inside the tview event loop). A prompt is
-// still possible interactively via app.Suspend; this only decides whether the
-// action is offered as live vs. read-only.
+// sudoNonInteractiveOK reports whether sudo is installed and can run without
+// prompting for a password ("sudo -n true" succeeds).
 func sudoNonInteractiveOK() bool {
 	if _, err := exec.LookPath("sudo"); err != nil {
 		return false
@@ -498,12 +458,9 @@ func sudoNonInteractiveOK() bool {
 	return exec.Command("sudo", "-n", "true").Run() == nil
 }
 
-// ─── `creator-server service <verb>` subcommand ────────────────────────
-
-// runServiceSubcommand handles `creator-server service <verb> [flags]` — the
-// root-only management entrypoint the console shells into via sudo (and that
-// install.sh calls to write the unit, so unit generation has ONE home). Verbs:
-// install | enable-now | start | stop | restart | status | logs.
+// runServiceSubcommand implements the "service" subcommand. It parses the verb
+// and flags, builds DeployOpts, and dispatches to the systemctl controller,
+// returning a process exit code (0 success, 1 runtime error, 2 usage error).
 func runServiceSubcommand(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr,
@@ -532,6 +489,7 @@ func runServiceSubcommand(args []string) int {
 		AcmeEmail: *acmeEmail,
 		Addr:      *addr,
 	}
+	// A domain is required to render URLs and (in builtin mode) request certificates.
 	if verb == "install" && opts.Domain == "" {
 		fmt.Fprintln(os.Stderr, "service install: -domain is required")
 		return 2
@@ -545,9 +503,9 @@ func runServiceSubcommand(args []string) int {
 	return 0
 }
 
-// dispatchServiceVerb is the testable core of the subcommand: it maps a verb to
-// a serviceController call (and renders the unit for `install`). Pure routing —
-// fakeController-driven tests cover every branch with no systemd.
+// dispatchServiceVerb runs a single service verb against the controller, writing
+// human-readable results to out and returning an error for failures or an
+// unrecognized verb.
 func dispatchServiceVerb(ctrl serviceController, verb string, opts DeployOpts, logLines int, out io.Writer) error {
 	switch verb {
 	case "install":
@@ -585,8 +543,8 @@ func dispatchServiceVerb(ctrl serviceController, verb string, opts DeployOpts, l
 	}
 }
 
-// formatServiceStatusLine renders a one-line human status, e.g.
-// "active (running) since 2026-06-21T10:03:21Z pid 1234" or "inactive (dead)".
+// formatServiceStatusLine renders a one-line human-readable summary of a status,
+// e.g. "active (running) since <time> pid <n>".
 func formatServiceStatusLine(s ServiceStatus) string {
 	state := s.ActiveState
 	if state == "" {

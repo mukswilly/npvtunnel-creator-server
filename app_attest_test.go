@@ -23,10 +23,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 )
 
-// ──────────────────────────────────────────────────────────────────
-// Verifier-level tests
-// ──────────────────────────────────────────────────────────────────
-
+// The App Attest verifier returns an unverified verdict for a non-IOS platform.
 func TestAppAttestRejectsNonIOS(t *testing.T) {
 	v := newAppleAppAttestVerifier(x509.NewCertPool())
 	verdict, err := v.verifyWithAppID(
@@ -41,6 +38,7 @@ func TestAppAttestRejectsNonIOS(t *testing.T) {
 	}
 }
 
+// An empty expected appID fails verification with a reason naming appId.
 func TestAppAttestRejectsEmptyAppID(t *testing.T) {
 	v := newAppleAppAttestVerifier(x509.NewCertPool())
 	verdict, err := v.verifyWithAppID(
@@ -58,6 +56,7 @@ func TestAppAttestRejectsEmptyAppID(t *testing.T) {
 	}
 }
 
+// An empty token yields an unverified verdict.
 func TestAppAttestRejectsEmptyToken(t *testing.T) {
 	v := newAppleAppAttestVerifier(x509.NewCertPool())
 	verdict, err := v.verifyWithAppID(
@@ -72,6 +71,7 @@ func TestAppAttestRejectsEmptyToken(t *testing.T) {
 	}
 }
 
+// With no trust roots configured the verifier fails closed even on a valid object.
 func TestAppAttestWithNoRootsFailsClosed(t *testing.T) {
 	blob, _, _ := buildSyntheticAppAttest(t, "TEAM1234.com.example.app", aaguidProd)
 	v := newAppleAppAttestVerifier(nil)
@@ -84,6 +84,8 @@ func TestAppAttestWithNoRootsFailsClosed(t *testing.T) {
 	}
 }
 
+// A trusted-root prod-AAGUID object verifies; App Attest is always hardware-backed
+// (reported as "strongbox") and carries no boot state.
 func TestAppAttestAcceptsTrustedSynthChain(t *testing.T) {
 	appID := "TEAM1234.com.example.app"
 	blob, _, root := buildSyntheticAppAttest(t, appID, aaguidProd)
@@ -105,7 +107,7 @@ func TestAppAttestAcceptsTrustedSynthChain(t *testing.T) {
 	if verdict.SecurityLevel != "strongbox" {
 		t.Errorf("SecurityLevel = %q, want strongbox", verdict.SecurityLevel)
 	}
-	// App Attest carries no verified-boot signal — empty by design.
+
 	if verdict.VerifiedBootState != "" {
 		t.Errorf("VerifiedBootState should be empty for App Attest, got %q", verdict.VerifiedBootState)
 	}
@@ -114,6 +116,7 @@ func TestAppAttestAcceptsTrustedSynthChain(t *testing.T) {
 	}
 }
 
+// An object carrying the development AAGUID verifies and the reason notes "dev".
 func TestAppAttestAcceptsDevAaguid(t *testing.T) {
 	appID := "TEAM1234.com.example.app"
 	blob, _, root := buildSyntheticAppAttest(t, appID, aaguidDev)
@@ -131,6 +134,7 @@ func TestAppAttestAcceptsDevAaguid(t *testing.T) {
 	}
 }
 
+// Verifying against a different appID fails the rpIdHash binding check.
 func TestAppAttestRejectsWrongAppID(t *testing.T) {
 	blob, _, root := buildSyntheticAppAttest(t, "TEAM1234.com.example.app", aaguidProd)
 	v := newAppleAppAttestVerifier(poolWith(t, root))
@@ -147,10 +151,12 @@ func TestAppAttestRejectsWrongAppID(t *testing.T) {
 	}
 }
 
+// An object whose root is not in the pool does not verify.
 func TestAppAttestRejectsUntrustedRoot(t *testing.T) {
 	appID := "TEAM1234.com.example.app"
 	blob, _, _ := buildSyntheticAppAttest(t, appID, aaguidProd)
-	// Pool with an unrelated root.
+
+	// Seed the pool from a second, unrelated object so the first cannot anchor.
 	_, _, otherRoot := buildSyntheticAppAttest(t, appID, aaguidProd)
 	v := newAppleAppAttestVerifier(poolWith(t, otherRoot))
 
@@ -166,10 +172,12 @@ func TestAppAttestRejectsUntrustedRoot(t *testing.T) {
 	}
 }
 
+// A nonce that no longer matches the challenge bound into the credCert fails.
 func TestAppAttestRejectsNonceMismatch(t *testing.T) {
 	appID := "TEAM1234.com.example.app"
 	blob, _, root := buildSyntheticAppAttest(t, appID, aaguidProd)
-	// Tamper with the nonce field after build — verifier should detect.
+
+	// Replace the nonce so it no longer derives the credCert's embedded value.
 	blob.Nonce = b64url.EncodeToString([]byte("different challenge"))
 	v := newAppleAppAttestVerifier(poolWith(t, root))
 
@@ -185,6 +193,7 @@ func TestAppAttestRejectsNonceMismatch(t *testing.T) {
 	}
 }
 
+// The embedded Apple production root loads, and a synthetic object must not anchor at it.
 func TestAppAttestProductionRootsLoad(t *testing.T) {
 	pool, err := loadAppleAppAttestRoots()
 	if err != nil {
@@ -193,7 +202,7 @@ func TestAppAttestProductionRootsLoad(t *testing.T) {
 	if pool == nil {
 		t.Fatal("nil pool")
 	}
-	// Synth chain must not anchor at production roots.
+
 	blob, _, _ := buildSyntheticAppAttest(t, "TEAM.app", aaguidProd)
 	v := newAppleAppAttestVerifier(pool)
 	verdict, _ := v.verifyWithAppID(blob, "TEAM.app")
@@ -202,10 +211,7 @@ func TestAppAttestProductionRootsLoad(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Registry + configs.json validation
-// ──────────────────────────────────────────────────────────────────
-
+// The registry resolves the apple-app-attest verifier name.
 func TestVerifierRegistryKnowsAppAttest(t *testing.T) {
 	r := newVerifierRegistry()
 	v, err := r.Lookup("apple-app-attest")
@@ -217,6 +223,7 @@ func TestVerifierRegistryKnowsAppAttest(t *testing.T) {
 	}
 }
 
+// An apple-app-attest policy without an appId fails to load.
 func TestConfigsFileRejectsAppAttestWithoutAppID(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
@@ -237,6 +244,7 @@ func TestConfigsFileRejectsAppAttestWithoutAppID(t *testing.T) {
 	}
 }
 
+// An apple-app-attest policy with an appId loads successfully.
 func TestConfigsFileAcceptsAppAttestWithAppID(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
@@ -255,10 +263,8 @@ func TestConfigsFileAcceptsAppAttestWithAppID(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// End-to-end integration via the HTTP server
-// ──────────────────────────────────────────────────────────────────
-
+// End to end: an object built for a different appID than the config expects is
+// rejected with 401.
 func TestIssueAppAttestStrictRejectsWrongAppID(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
@@ -275,9 +281,8 @@ func TestIssueAppAttestStrictRejectsWrongAppID(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
 
-	// Synthesize an attestation for a DIFFERENT app — the rpIdHash
-	// check should reject it.
 	blob, _, root := buildSyntheticAppAttest(t, "ATTACKER.com.different.app", aaguidProd)
+	// Point the App Attest verifier at the synthetic root so the test object anchors.
 	state.verifierRegistry = newVerifierRegistryWithAppAttestRoots(poolWith(t, root))
 
 	ts := newTestServerWithState(t, state)
@@ -297,6 +302,7 @@ func TestIssueAppAttestStrictRejectsWrongAppID(t *testing.T) {
 	}
 }
 
+// End to end: an object whose appID matches the config is admitted with 200.
 func TestIssueAppAttestStrictAcceptsMatchingAppID(t *testing.T) {
 	appID := "TEAM1234.com.example.app"
 	dir := t.TempDir()
@@ -334,24 +340,11 @@ func TestIssueAppAttestStrictAcceptsMatchingAppID(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Synthetic App Attest object construction
-//
-// Builds a 2-cert chain (leaf + self-signed root). The leaf carries
-// the App Attest credCert extension with a properly-computed nonce.
-// authData is hand-crafted to the App Attest layout with the right
-// rpIdHash and credentialId.
-//
-// This exercises the verifier end-to-end without needing a real iOS
-// device.
-// ──────────────────────────────────────────────────────────────────
-
-// buildSyntheticAppAttest returns:
-//
-//	blob — AttestationBlob with platform=IOS, base64url-encoded CBOR
-//	       token, and base64url-encoded challenge in Nonce.
-//	leafCert — convenience handle
-//	rootCert — for adding to a test trust pool
+// buildSyntheticAppAttest builds a complete synthetic Apple App Attest object for
+// the given appID and AAGUID: a leaf+root chain whose leaf credCert carries the
+// nonce extension, authenticator data binding the appID and credential, and the
+// whole thing CBOR-encoded. Returns the attestation blob (with the matching
+// challenge as the nonce), the leaf cert, and the root cert.
 func buildSyntheticAppAttest(
 	t *testing.T,
 	appID string,
@@ -377,40 +370,35 @@ func buildSyntheticAppAttest(
 	}
 	rootCert, _ := x509.ParseCertificate(rootDER)
 
-	// Pick a stable challenge for this synthetic scenario.
 	challenge := []byte("synthetic-app-attest-challenge-32b!")
 
-	// authData layout. We construct it BEFORE the leaf cert because
-	// the leaf cert's credCert extension must contain a nonce
-	// computed over the authData + clientDataHash, and the leaf's
-	// pubkey must hash to the credentialId inside authData.
+	// The credential ID is the SHA-256 of the leaf public key; rpIdHash binds the appID.
 	leafPubUncompressed := marshalUncompressed(&leafPriv.PublicKey)
 	credentialID := sha256.Sum256(leafPubUncompressed)
 	rpIDHash := sha256.Sum256([]byte(appID))
 
+	// Authenticator data: rpIdHash | flags | counter | AAGUID | credIdLen | credId.
 	authData := make([]byte, 0, 55+len(credentialID))
 	authData = append(authData, rpIDHash[:]...)
-	authData = append(authData, 0x40) // flags: AT bit set
+	authData = append(authData, 0x40)
 	counter := make([]byte, 4)
-	binary.BigEndian.PutUint32(counter, 0) // signCounter must be 0 for attestation
+	binary.BigEndian.PutUint32(counter, 0)
 	authData = append(authData, counter...)
 	authData = append(authData, aaguid...)
 	credIDLen := make([]byte, 2)
 	binary.BigEndian.PutUint16(credIDLen, uint16(len(credentialID)))
 	authData = append(authData, credIDLen...)
 	authData = append(authData, credentialID[:]...)
-	// COSE key omitted — verifier doesn't read it.
 
-	// Compute the nonce the leaf's credCert extension must carry:
-	// SHA256(authData || SHA256(challenge)).
+	// Expected nonce = SHA-256(authData || SHA-256(challenge)).
 	clientDataHash := sha256.Sum256(challenge)
 	composite := append([]byte{}, authData...)
 	composite = append(composite, clientDataHash[:]...)
 	nonce := sha256.Sum256(composite)
 
-	// Build the credCert extension value: OCTET STRING containing
-	// SEQUENCE { [1] EXPLICIT OCTET STRING nonce }.
-	innerNonceDER, err := asn1.Marshal(nonce[:]) // produces OCTET STRING 04 20 ...
+	// The credCert extension is a SEQUENCE holding the nonce OCTET STRING under
+	// context tag [1].
+	innerNonceDER, err := asn1.Marshal(nonce[:])
 	if err != nil {
 		t.Fatalf("marshal inner nonce: %v", err)
 	}
@@ -451,7 +439,8 @@ func buildSyntheticAppAttest(
 	}
 	leafCert, _ := x509.ParseCertificate(leafDER)
 
-	// Build the CBOR attestation object.
+	// Assemble the CBOR App Attest object: format id, statement (cert chain +
+	// receipt), and authenticator data.
 	att := appAttestObject{
 		Fmt: "apple-appattest",
 		AttStmt: appAttestStmt{

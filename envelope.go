@@ -19,16 +19,19 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// Sealed envelope minter. Produces the .npvs sealed-envelope wire
-// format — fixed magic, canonical-JSON header, ECDH KEM-wrapped DEK,
-// ChaCha20-Poly1305 body, ECDSA-P256 signature. The format is the spec.
+// The .npvs envelope: a signed, encrypted container for a config payload,
+// readable only by the recipients it is minted for. On-the-wire layout is a
+// fixed binary frame:
 //
-// envelope_test.go does round-trip verification end-to-end (encode →
-// decode → verify signature → unwrap → AEAD-decrypt body) so the codec
-// is self-validating against the documented format.
-
-// ─── Wire constants (fixed by the .npvs format) ──
-
+//	"NPVS" magic (4) | version (1) | headerLen (4, big-endian) |
+//	header (canonical JSON) | bodyNonce (12) | bodyLen (4, big-endian) |
+//	body ciphertext | signature (64)
+//
+// The header is canonical JSON and is authenticated twice: it is the ECDSA
+// signature input (with the rest of the frame) and the AEAD associated data for
+// the body. The body is the config payload encrypted under a random DEK; the
+// DEK is wrapped separately to each recipient. Every byte field is fixed-width,
+// so these lengths are part of the wire contract.
 const (
 	envelopeMagicLen     = 4
 	envelopeVersion      = 1
@@ -36,19 +39,22 @@ const (
 	envelopeHeaderLenLen = 4
 	envelopeBodyNonceLen = 12
 	envelopeBodyLenLen   = 4
-	envelopeSignatureLen = 64 // ECDSA P-256 IEEE P1363
-	envelopeDEKLen       = 32 // ChaCha20-Poly1305 key
+	envelopeSignatureLen = 64
+	envelopeDEKLen       = 32
 	envelopeConfigIDLen  = 16
-	envelopeWrapLen      = 93 // eph_pk(33)+nonce(12)+ct(32)+tag(16)
-	envelopeP256CompLen  = 33 // SEC 1 compressed P-256 pubkey
+	envelopeWrapLen      = 93
+	envelopeP256CompLen  = 33
 )
 
-var envelopeMagic = []byte{0x4E, 0x50, 0x56, 0x53} // "NPVS"
+// envelopeMagic is the leading "NPVS" magic bytes.
+var envelopeMagic = []byte{0x4E, 0x50, 0x56, 0x53}
 
+// envelopeWrapInfoLabel is the fixed HKDF info prefix for per-recipient DEK
+// wrapping; the configId is appended to it (see ecdhEphemeralWrap).
 var envelopeWrapInfoLabel = []byte("NPVS-v1-wrap")
 
-// ─── Header schema (.npvs wire format) ──────────────────────────
-
+// envelopeHeader is the canonical-JSON header. Field names and ordering of the
+// serialized form are fixed by canonical JSON (sorted keys).
 type envelopeHeader struct {
 	V          int                 `json:"v"`
 	ConfigID   string              `json:"configId"`
@@ -58,17 +64,15 @@ type envelopeHeader struct {
 	Recipients []envelopeRecipient `json:"recipients"`
 }
 
+// envelopeCreatorRef identifies the signing creator: Fp is the SHA-256
+// fingerprint of the compressed pubkey, Pk is the compressed pubkey itself.
 type envelopeCreatorRef struct {
 	Fp string `json:"fp"`
 	Pk string `json:"pk"`
 }
 
-// envelopePolicy is the config-policy header object. The wire format
-// includes every field, including defaults — so even an unset boolean
-// renders `false` rather than being omitted. `expiresAt` is the one
-// nullable field: it always emits its key, writing `null` when unset.
-// We match this by using a pointer for `expiresAt` and no `omitempty`
-// on the bool/string fields.
+// envelopePolicy carries recipient-facing usage restrictions stamped into the
+// envelope. ExpiresAt is a pointer so it serializes as null when unset.
 type envelopePolicy struct {
 	OnlyMobileNetwork   bool    `json:"onlyMobileNetwork"`
 	AttestationLevel    string  `json:"attestationLevel"`
@@ -77,17 +81,16 @@ type envelopePolicy struct {
 	CustomServerMessage string  `json:"customServerMessage"`
 }
 
+// envelopeRecipient is one per-recipient DEK wrap: Fp is the SHA-256
+// fingerprint of the recipient's compressed pubkey, Wrap is the wrapped DEK.
 type envelopeRecipient struct {
 	Fp   string `json:"fp"`
 	Wrap string `json:"wrap"`
 }
 
-// ─── Issuer body (V2) shape ───────────────────────────────────────
-
-// issuerBody is the V2 issuer-body object. Field names + encoding are
-// fixed by the wire format so the body bytes are exactly what the
-// signature is computed over — required for the envelope signature to
-// verify when the app re-canonicalizes and checks it.
+// issuerBody is the plaintext body for the "v2-issuer" kind: instead of the
+// config itself, it tells the recipient which issuer to call and which creator
+// key to expect, so the config is fetched over /v1/issue.
 type issuerBody struct {
 	Kind          string `json:"kind"`
 	CreatorPubkey string `json:"creatorPubkey"`
@@ -96,64 +99,39 @@ type issuerBody struct {
 
 const issuerBodyKindV2 = "v2-issuer"
 
-// encodeIssuerBody marshals the body to its JSON wire form. The wire
-// format omits defaults for this body, so optional null fields are
-// omitted entirely (omitempty on the pointer fields).
 func encodeIssuerBody(b issuerBody) ([]byte, error) {
-	// Marshal via encoding/json. The struct field declaration order
-	// determines the wire field order. Order doesn't affect the
-	// cryptographic hash (the signature covers the canonical header
-	// bytes, not the body), but keeping it stable aids readability.
+
 	return json.Marshal(b)
 }
 
-// ─── Minter input + result ────────────────────────────────────────
-
-// mintInput is everything the minter needs to produce one envelope.
+// mintInput is the set of parameters for minting one envelope.
 type mintInput struct {
-	// CreatorKey is the persisted creator signing key (loaded from
-	// /var/lib/creator-server/creator-key.pem in production).
 	CreatorKey *ecdsa.PrivateKey
-	// RecipientPubKeys is the list of recipient P-256 compressed
-	// 33-byte pubkeys this envelope is addressed to. For
-	// issuer-backed envelopes this is typically a single recipient.
+
 	RecipientPubKeys [][]byte
-	// IssuerURL is the creator-server's public /v1/issue endpoint.
+
 	IssuerURL string
-	// ConfigID is 16 bytes; if nil the minter generates one.
+
 	ConfigID []byte
-	// IssuedAt is the wall-clock timestamp; if zero the minter
-	// uses time.Now().UTC().
+
 	IssuedAt time.Time
-	// Policy controls the envelope policy fields. If nil, defaults
-	// (no expiry, NONE attestation level) are used.
+
 	Policy *envelopePolicy
 }
 
-// mintResult is what the minter hands back.
+// mintResult is a freshly minted envelope plus identifiers derived from it.
 type mintResult struct {
-	// EnvelopeBytes is the raw .npvs bytes — pass to recipient as
-	// base64 over text channels, or as the file directly.
 	EnvelopeBytes []byte
-	// ConfigFp is base64url-no-pad of SHA-256(envelopeBytes) — an
-	// integrity hash of the envelope file, informational only. Not a
-	// routing key (see ConfigID) and not sent by the recipient; useful
-	// for verifying an envelope file hasn't been corrupted in transit.
+
 	ConfigFp string
-	// ConfigID is the 16-byte stable identifier embedded in the
-	// envelope header. This is the routing key: the operator pastes its
-	// base64url form into configs.json, and the recipient echoes it back
-	// in every /v1/issue request so the issuer can find the registry
-	// entry. Stable across re-mints — re-mint with the same ConfigID to
-	// update an envelope without breaking existing recipients.
+
 	ConfigID []byte
 }
 
-// ─── Minter ───────────────────────────────────────────────────────
-
-// mintIssuerEnvelope produces a fully-sealed V2 issuer envelope per
-// the mintInput. Caller is responsible for distributing the result
-// to the recipient + registering the configId in configs.json.
+// mintIssuerEnvelope builds a "v2-issuer" envelope: it generates a random DEK,
+// encrypts the issuer body under it, wraps the DEK to each recipient, then
+// canonicalizes and signs the whole frame. At least one recipient is required;
+// mass-share is intentionally unsupported.
 func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 	if in.CreatorKey == nil {
 		return nil, fmt.Errorf("CreatorKey is required")
@@ -171,7 +149,6 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		return nil, fmt.Errorf("IssuerURL is required")
 	}
 
-	// configId — random 16 bytes if not supplied.
 	configID := in.ConfigID
 	if configID == nil {
 		configID = make([]byte, envelopeConfigIDLen)
@@ -183,18 +160,12 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		return nil, fmt.Errorf("ConfigID must be %d bytes, got %d", envelopeConfigIDLen, len(configID))
 	}
 
-	// IssuedAt default.
 	issuedAt := in.IssuedAt
 	if issuedAt.IsZero() {
 		issuedAt = time.Now().UTC()
 	}
 	issuedAtStr := issuedAt.UTC().Format("2006-01-02T15:04:05.999999999Z")
-	// Timestamps are ISO-8601 with a `Z` suffix and variable fractional
-	// seconds. Byte-identical timestamps aren't required — the app
-	// doesn't re-canonicalize the header, it uses the bytes as-is for
-	// AAD + signature verification.
 
-	// Policy default.
 	pol := in.Policy
 	if pol == nil {
 		pol = &envelopePolicy{
@@ -206,14 +177,12 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		}
 	}
 
-	// Creator identity.
 	creatorPub, err := compressP256(&in.CreatorKey.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("compress creator pubkey: %w", err)
 	}
 	creatorFp := sha256.Sum256(creatorPub)
 
-	// Fresh DEK + body nonce for this seal.
 	dek := make([]byte, envelopeDEKLen)
 	if _, err := rand.Read(dek); err != nil {
 		return nil, fmt.Errorf("generate DEK: %w", err)
@@ -229,7 +198,6 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		return nil, fmt.Errorf("generate body nonce: %w", err)
 	}
 
-	// Wrap the DEK for each recipient (KEM sender step).
 	recipientEntries := make([]envelopeRecipient, 0, len(in.RecipientPubKeys))
 	for i, pk := range in.RecipientPubKeys {
 		wrap, fp, err := ecdhEphemeralWrap(pk, configID, dek)
@@ -242,7 +210,6 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		})
 	}
 
-	// Build header.
 	header := envelopeHeader{
 		V:        envelopeVersion,
 		ConfigID: b64url.EncodeToString(configID),
@@ -259,7 +226,6 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		return nil, fmt.Errorf("canonicalize header: %w", err)
 	}
 
-	// Encode + seal the body.
 	bodyBytes, err := encodeIssuerBody(issuerBody{
 		Kind:          issuerBodyKindV2,
 		CreatorPubkey: b64url.EncodeToString(creatorPub),
@@ -269,19 +235,19 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		return nil, fmt.Errorf("encode issuer body: %w", err)
 	}
 
+	// The canonical header is the AEAD associated data, binding the encrypted
+	// body to the exact header it was minted with.
 	bodyCipher, err := chachaPoly1305Encrypt(dek, bodyNonce, headerBytes, bodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt body: %w", err)
 	}
 
-	// Sign over magic||version||headerLen||header||bodyNonce||bodyLen||bodyCipher.
 	toSign := buildSignedRange(headerBytes, bodyNonce, bodyCipher)
 	sig, err := signP1363(in.CreatorKey, toSign)
 	if err != nil {
 		return nil, fmt.Errorf("sign envelope: %w", err)
 	}
 
-	// Encode wire layout.
 	envelopeBytes := encodeEnvelopeWire(headerBytes, bodyNonce, bodyCipher, sig)
 	configFp := sha256.Sum256(envelopeBytes)
 
@@ -292,6 +258,7 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 	}, nil
 }
 
+// encodeEnvelopeWire serializes the full frame including the trailing signature.
 func encodeEnvelopeWire(headerBytes, bodyNonce, bodyCipher, signature []byte) []byte {
 	total := envelopeMagicLen + envelopeVersionLen + envelopeHeaderLenLen +
 		len(headerBytes) + envelopeBodyNonceLen + envelopeBodyLenLen +
@@ -316,6 +283,8 @@ func encodeEnvelopeWire(headerBytes, bodyNonce, bodyCipher, signature []byte) []
 	return out
 }
 
+// buildSignedRange returns the bytes covered by the signature: the whole frame
+// up to but not including the signature itself.
 func buildSignedRange(headerBytes, bodyNonce, bodyCipher []byte) []byte {
 	total := envelopeMagicLen + envelopeVersionLen + envelopeHeaderLenLen +
 		len(headerBytes) + envelopeBodyNonceLen + envelopeBodyLenLen + len(bodyCipher)
@@ -337,61 +306,48 @@ func buildSignedRange(headerBytes, bodyNonce, bodyCipher []byte) []byte {
 	return buf
 }
 
-// ─── KEM wrap (ECDH-ephemeral) ──────────────────────────────────────────────
-
-// ecdhEphemeralWrap implements the KEM sender step:
-//
-//	1. Generate ephemeral P-256 keypair.
-//	2. shared = ECDH(eph_sk, recipient_pk).x
-//	3. kdk    = HKDF-SHA256(salt=fp, ikm=shared, info=label||configId, L=32)
-//	4. nonce  = random(12)
-//	5. ct||tag = AES-256-GCM.encrypt(key=kdk, nonce=nonce, aad=fp, pt=dek)
-//	6. wrap   = eph_pk_compressed || nonce || ct || tag   (93 bytes)
-//
-// Returns (wrap, fp_of_recipient).
+// ecdhEphemeralWrap wraps dek for one recipient. It does an ephemeral-static
+// ECDH against the recipient's P-256 key, derives a key-encryption key with
+// HKDF-SHA256 (salt = recipient fingerprint, info = label || configId), then
+// seals the DEK with AES-256-GCM (associated data = fingerprint). The 93-byte
+// wrap is ephemeralPub(33) || gcmNonce(12) || ciphertext+tag(48). It returns
+// the wrap and the recipient fingerprint.
 func ecdhEphemeralWrap(recipientPubCompressed, configID, dek []byte) ([]byte, []byte, error) {
 	curve := ecdh.P256()
 
-	// Decode recipient pubkey from SEC1 compressed → ecdh.PublicKey.
 	recipientPub, err := decodeP256CompressedToEcdh(recipientPubCompressed)
 	if err != nil {
 		return nil, nil, fmt.Errorf("decode recipient pubkey: %w", err)
 	}
 
-	// Generate ephemeral keypair.
 	ephPriv, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate ephemeral key: %w", err)
 	}
-	ephPubBytes := ephPriv.PublicKey().Bytes() // 65-byte uncompressed (0x04||X||Y)
+	ephPubBytes := ephPriv.PublicKey().Bytes()
 	ephPubCompressed, err := compressUncompressedP256(ephPubBytes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("compress ephemeral pubkey: %w", err)
 	}
 
-	// ECDH(eph_sk, recipient_pk) → 32-byte shared X.
 	shared, err := ephPriv.ECDH(recipientPub)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ECDH: %w", err)
 	}
 	defer zeroize(shared)
 
-	// fp = SHA-256(recipient_pk_compressed). Used as HKDF salt + GCM AAD.
 	fp := sha256.Sum256(recipientPubCompressed)
 
-	// info = "NPVS-v1-wrap" || configId  (28 bytes for the standard configId).
 	info := make([]byte, 0, len(envelopeWrapInfoLabel)+len(configID))
 	info = append(info, envelopeWrapInfoLabel...)
 	info = append(info, configID...)
 
-	// HKDF-SHA256(salt=fp, ikm=shared, info=info, L=32).
 	kdk := make([]byte, 32)
 	if _, err := io.ReadFull(hkdf.New(sha256.New, shared, fp[:], info), kdk); err != nil {
 		return nil, nil, fmt.Errorf("HKDF: %w", err)
 	}
 	defer zeroize(kdk)
 
-	// AES-256-GCM(key=kdk, aad=fp, pt=dek).
 	block, err := aes.NewCipher(kdk)
 	if err != nil {
 		return nil, nil, fmt.Errorf("aes cipher: %w", err)
@@ -409,7 +365,6 @@ func ecdhEphemeralWrap(recipientPubCompressed, configID, dek []byte) ([]byte, []
 		return nil, nil, fmt.Errorf("unexpected gcm output length: %d", len(ctWithTag))
 	}
 
-	// wrap = eph_pk_compressed(33) || nonce(12) || ct(32) || tag(16) = 93 bytes.
 	wrap := make([]byte, 0, envelopeWrapLen)
 	wrap = append(wrap, ephPubCompressed...)
 	wrap = append(wrap, nonce...)
@@ -420,8 +375,8 @@ func ecdhEphemeralWrap(recipientPubCompressed, configID, dek []byte) ([]byte, []
 	return wrap, fp[:], nil
 }
 
-// ─── ChaCha20-Poly1305 (body cipher) ──────────────────────────────
-
+// chachaPoly1305Encrypt seals plaintext with ChaCha20-Poly1305 under key/nonce,
+// binding aad as associated data.
 func chachaPoly1305Encrypt(key, nonce, aad, plaintext []byte) ([]byte, error) {
 	aead, err := chacha20poly1305.New(key)
 	if err != nil {
@@ -433,6 +388,7 @@ func chachaPoly1305Encrypt(key, nonce, aad, plaintext []byte) ([]byte, error) {
 	return aead.Seal(nil, nonce, plaintext, aad), nil
 }
 
+// chachaPoly1305Decrypt is the inverse of chachaPoly1305Encrypt.
 func chachaPoly1305Decrypt(key, nonce, aad, ciphertext []byte) ([]byte, error) {
 	aead, err := chacha20poly1305.New(key)
 	if err != nil {
@@ -441,12 +397,8 @@ func chachaPoly1305Decrypt(key, nonce, aad, ciphertext []byte) ([]byte, error) {
 	return aead.Open(nil, nonce, ciphertext, aad)
 }
 
-// ─── ECDSA P-256 IEEE P1363 signing ───────────────────────────────
-
-// signP1363 produces a fixed-64-byte signature (r || s, each 32 bytes
-// big-endian, left-padded with zeros) — the IEEE P1363 form the wire
-// format uses. Same logic as signReceipt in crypto.go but operating on
-// raw bytes here.
+// signP1363 signs SHA-256(msg) with the ECDSA key and returns the 64-byte
+// P1363 form (r||s, 32 bytes each, big-endian, zero-padded).
 func signP1363(priv *ecdsa.PrivateKey, msg []byte) ([]byte, error) {
 	hash := sha256.Sum256(msg)
 	r, s, err := ecdsa.Sign(rand.Reader, priv, hash[:])
@@ -461,10 +413,7 @@ func signP1363(priv *ecdsa.PrivateKey, msg []byte) ([]byte, error) {
 	return sig, nil
 }
 
-// ─── P-256 compressed-form helpers ────────────────────────────────
-
-// compressP256 emits the SEC 1 compressed form (0x02|0x03 prefix +
-// 32-byte X) from a crypto/ecdsa public key.
+// compressP256 encodes a P-256 public key in 33-byte SEC1 compressed form.
 func compressP256(pub *ecdsa.PublicKey) ([]byte, error) {
 	if pub.Curve != elliptic.P256() {
 		return nil, fmt.Errorf("not P-256")
@@ -480,9 +429,8 @@ func compressP256(pub *ecdsa.PublicKey) ([]byte, error) {
 	return out, nil
 }
 
-// compressUncompressedP256 takes the 65-byte uncompressed form
-// (0x04 || X || Y) — which is what crypto/ecdh's PublicKey.Bytes()
-// returns — and produces the 33-byte compressed form.
+// compressUncompressedP256 converts a 65-byte uncompressed P-256 point (0x04
+// prefix) to 33-byte compressed form.
 func compressUncompressedP256(uncompressed []byte) ([]byte, error) {
 	if len(uncompressed) != 65 || uncompressed[0] != 0x04 {
 		return nil, fmt.Errorf("not P-256 uncompressed (got %d bytes, prefix 0x%02x)",
@@ -499,19 +447,14 @@ func compressUncompressedP256(uncompressed []byte) ([]byte, error) {
 	return out, nil
 }
 
-// decodeP256CompressedToEcdh decodes a 33-byte SEC 1 compressed
-// point into a crypto/ecdh.PublicKey for use with ECDH operations.
-// Goes via elliptic.UnmarshalCompressed (the only stdlib path) to
-// recover X+Y, then re-emits as uncompressed for crypto/ecdh.
+// decodeP256CompressedToEcdh decodes a 33-byte compressed P-256 point into an
+// ecdh.PublicKey for use as the static peer in ECDH.
 func decodeP256CompressedToEcdh(compressed []byte) (*ecdh.PublicKey, error) {
 	if len(compressed) != envelopeP256CompLen {
 		return nil, fmt.Errorf("not 33 bytes: %d", len(compressed))
 	}
 	curve := elliptic.P256()
-	// nolint:staticcheck // SA1019: UnmarshalCompressed is the only stdlib
-	// API that decompresses P-256 points and yields X,Y suitable for
-	// the crypto/ecdh round-trip below. crypto/ecdh.PublicKey takes
-	// uncompressed bytes only.
+
 	x, y := elliptic.UnmarshalCompressed(curve, compressed)
 	if x == nil {
 		return nil, fmt.Errorf("invalid compressed point")
@@ -525,9 +468,8 @@ func decodeP256CompressedToEcdh(compressed []byte) (*ecdh.PublicKey, error) {
 	return ecdh.P256().NewPublicKey(uncompressed)
 }
 
-// ─── Verify + unseal (for round-trip testing) ─────────────────────
-
-// envelopeDecoded is what decodeEnvelopeWire returns.
+// envelopeDecoded is a parsed frame: the typed header plus the raw byte ranges
+// needed to re-verify the signature and decrypt the body.
 type envelopeDecoded struct {
 	Header         envelopeHeader
 	HeaderBytes    []byte
@@ -536,10 +478,8 @@ type envelopeDecoded struct {
 	Signature      []byte
 }
 
-// decodeEnvelopeWire parses the wire format back into its parts.
-// Used by envelope_test.go for round-trip tests and (potentially)
-// by future tooling — there's no production code path that needs
-// this on the server side today.
+// decodeEnvelopeWire parses and length-checks a frame, rejecting bad magic,
+// unknown versions, truncation, and trailing bytes after the signature.
 func decodeEnvelopeWire(raw []byte) (*envelopeDecoded, error) {
 	minLen := envelopeMagicLen + envelopeVersionLen + envelopeHeaderLenLen +
 		envelopeBodyNonceLen + envelopeBodyLenLen + envelopeSignatureLen
@@ -593,8 +533,8 @@ func decodeEnvelopeWire(raw []byte) (*envelopeDecoded, error) {
 	}, nil
 }
 
-// ─── small helpers ────────────────────────────────────────────────
-
+// ptrOrNil returns nil for the empty string, otherwise a pointer to s. Used for
+// optional JSON fields that must serialize as null when absent.
 func ptrOrNil(s string) *string {
 	if s == "" {
 		return nil
@@ -602,6 +542,7 @@ func ptrOrNil(s string) *string {
 	return &s
 }
 
+// zeroize overwrites b with zeros to clear key material from memory.
 func zeroize(b []byte) {
 	for i := range b {
 		b[i] = 0

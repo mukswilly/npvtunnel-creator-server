@@ -5,29 +5,9 @@ import (
 	"time"
 )
 
-// rateLimiter is an in-memory sliding-window counter keyed by devicePk.
-//
-// For each key it tracks the timestamps of recent allowed requests.
-// On Allow(key, limit, window), it drops timestamps older than `window`
-// and checks whether (count + 1) <= limit. If so, records the new
-// timestamp and returns true. Otherwise returns false plus a retry-
-// after duration based on when the oldest in-window request would
-// drop off.
-//
-// Why sliding-window instead of token-bucket: the audit story is simpler
-// (each "you got rate-limited" event in the log has a clear "you made
-// N requests in window W" interpretation). Token-bucket smooths bursts
-// but the burst-tolerance dial doesn't pay off for the abuse pattern
-// we care about, which is "one device, many issuances over a short
-// period."
-//
-// Memory bound: entries with no activity within `window` are evicted on
-// the next call that touches the same key. A separate background sweep
-// (Sweep, called periodically by the caller) evicts entries across all
-// keys. For a typical creator with O(100s) of recipients each hitting
-// the issuer once per hour, the total entry count stays well-bounded
-// without the sweep, but the sweep is cheap insurance against
-// long-running processes accumulating dead keys from one-off devices.
+// rateLimiter is a sliding-window limiter keyed by an arbitrary string. Each key
+// holds the timestamps of recent events within the window. now is a clock seam
+// for tests.
 type rateLimiter struct {
 	mu      sync.Mutex
 	entries map[string]*[]time.Time
@@ -41,23 +21,18 @@ func newRateLimiter() *rateLimiter {
 	}
 }
 
-// rateLimitDecision is what Allow returns.
+// rateLimitDecision is the result of Allow. RetryAfter is set only when the
+// request was denied.
 type rateLimitDecision struct {
-	// Allowed reports whether the request should proceed.
 	Allowed bool
-	// RetryAfter is set when Allowed is false. The smallest duration
-	// the caller can wait before re-trying and getting Allowed = true,
-	// assuming no further requests fail in the meantime. Always > 0
-	// when Allowed is false; zero when Allowed is true.
+
 	RetryAfter time.Duration
 }
 
-// Allow checks whether one more request from `key` within the trailing
-// `window` would keep its count at or below `limit`. If so, records the
-// new timestamp and returns Allowed = true.
-//
-// limit <= 0 means "no limit" — always allow. Used by the handler to
-// short-circuit when the creator's policy hasn't configured one.
+// Allow records an event for key and reports whether it is within limit over the
+// trailing window. A non-positive limit disables limiting. When denied,
+// RetryAfter is how long until the oldest in-window event ages out (at least one
+// second).
 func (r *rateLimiter) Allow(key string, limit int, window time.Duration) rateLimitDecision {
 	if limit <= 0 {
 		return rateLimitDecision{Allowed: true}
@@ -75,7 +50,7 @@ func (r *rateLimiter) Allow(key string, limit int, window time.Duration) rateLim
 		r.entries[key] = bucket
 	}
 
-	// Drop timestamps older than the window.
+	// Drop events that have aged out of the window (in place).
 	trimmed := (*bucket)[:0]
 	for _, ts := range *bucket {
 		if ts.After(cutoff) {
@@ -85,8 +60,7 @@ func (r *rateLimiter) Allow(key string, limit int, window time.Duration) rateLim
 	*bucket = trimmed
 
 	if len(*bucket) >= limit {
-		// Time until the oldest in-window entry drops off — the soonest
-		// the caller could try again successfully.
+
 		oldest := (*bucket)[0]
 		retryAfter := oldest.Add(window).Sub(now)
 		if retryAfter < time.Second {
@@ -99,9 +73,8 @@ func (r *rateLimiter) Allow(key string, limit int, window time.Duration) rateLim
 	return rateLimitDecision{Allowed: true}
 }
 
-// Sweep evicts entries with no activity within `window`. Cheap relative
-// to a goroutine-per-entry approach; suitable to call from a ticker or
-// from the request path opportunistically.
+// Sweep deletes keys whose events have all aged out of the window, bounding
+// memory for one-off callers.
 func (r *rateLimiter) Sweep(window time.Duration) {
 	cutoff := r.now().Add(-window)
 
@@ -122,7 +95,7 @@ func (r *rateLimiter) Sweep(window time.Duration) {
 	}
 }
 
-// Size returns the number of tracked keys. Test affordance.
+// Size returns the number of tracked keys.
 func (r *rateLimiter) Size() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -5,66 +5,36 @@ import (
 	"time"
 )
 
-// attestationDecision is the outcome of applying an AttestationPolicy to
-// one IssueRequest. Returned by evaluateAttestationPolicy so the handler
-// has a single switch instead of nested ifs.
+// attestationDecision is the outcome of applying a policy to a request: whether
+// to reject it, how long the issued config may live, and what to record.
 type attestationDecision struct {
-	// reject is true when /v1/issue should fail closed with 401
-	// attestation_failed. Set when:
-	//   - strict mode + no claimed attestation
-	//   - any mode + verifier returned Verified=false (after being
-	//     configured)
-	//   - any mode + RequireHardwareBacked + verdict.HardwareBacked == false
+	// reject reports whether the request must be denied.
 	reject bool
 
-	// rejectReason is a short, log-safe explanation of why reject is
-	// true. Used for the audit log + error detail.
+	// rejectReason explains a rejection.
 	rejectReason string
 
-	// ttl is the config lifetime to use for this issuance. Always
-	// set, regardless of mode. The handler uses this in place of the
-	// previously-hardcoded 1 hour.
+	// ttl is the lifetime granted to the issued config.
 	ttl time.Duration
 
-	// logAttestation, when true, hints to the handler to emit a more
-	// detailed audit-log record of the attestation evidence the client
-	// claimed. Currently set by "observe" mode; ignored by the handler
-	// for other modes (they get the standard log shape).
+	// logAttestation requests that the attestation outcome be recorded.
 	logAttestation bool
 
-	// verdict, if non-nil, was produced by an AttestationVerifier and
-	// is logged alongside other audit fields. nil when no verifier is
-	// configured for this policy.
+	// verdict is the verifier result, when a verifier ran; nil otherwise.
 	verdict *Verdict
 }
 
-// defaultConfigTtl is the config lifetime used when a config entry
-// doesn't set configTtlSec. The per-config override (resolveConfigTtl)
-// supersedes it; the soft mode is the only thing that further shortens
-// the resolved baseline.
+// defaultConfigTtl is the config lifetime granted when none is configured.
 const defaultConfigTtl = 1 * time.Hour
 
-// configTtlMin / configTtlMax bound the per-config configTtlSec override,
-// enforced at configs.json load time.
-//
-//   Floor: a config whose lifetime is shorter than the connect
-//   handshake (clock skew + network latency before the VPN server
-//   validates the HMAC) would expire in flight. 60s leaves margin.
-//
-//   Ceiling: the issuer model exists to hand out short-lived, device-bound
-//   configs. An unbounded TTL quietly reverts it to the static-config
-//   model it replaced, and catches a fat-fingered ms-for-sec value
-//   (e.g. 604800000) before it hands out a multi-year config. 7 days is
-//   generous for "I don't want recipients re-issuing constantly."
+// configTtlMin and configTtlMax bound the permitted config lifetime.
 const (
 	configTtlMin = 60 * time.Second
 	configTtlMax = 7 * 24 * time.Hour
 )
 
-// resolveConfigTtl picks the baseline config lifetime for a config
-// entry: the per-entry configTtlSec override, or defaultConfigTtl when unset
-// (0). Values are bounds-checked at config load (validateConfigTtlSec), so
-// a non-zero ConfigTtlSec here is already within [configTtlMin, configTtlMax].
+// resolveConfigTtl returns the config lifetime for an entry, falling back to
+// defaultConfigTtl when the entry is missing or specifies no positive TTL.
 func resolveConfigTtl(entry *ConfigEntry) time.Duration {
 	if entry == nil || entry.ConfigTtlSec <= 0 {
 		return defaultConfigTtl
@@ -72,50 +42,23 @@ func resolveConfigTtl(entry *ConfigEntry) time.Duration {
 	return time.Duration(entry.ConfigTtlSec) * time.Second
 }
 
-// evaluateAttestationPolicy applies the (possibly-nil) policy to the
-// incoming request and returns what the handler should do.
-//
-// Reading the truth table:
-//
-//   policy == nil OR policy.mode == "off"
-//     -> proceed, full TTL
-//   policy.mode == "observe"
-//     -> proceed, full TTL, log attestation evidence
-//   policy.mode == "soft"
-//     -> proceed
-//        if client claimed attestation: full TTL
-//        if client didn't:               short TTL
-//   policy.mode == "strict"
-//     -> if client claimed attestation: proceed, full TTL
-//        if client didn't:               reject
-//
-// "claimed attestation" — when no Verifier is configured — means
-// Attestation.Platform != "NONE" and Attestation.Token is non-empty.
-// That's honest signal against indifferent malicious clients but not
-// against motivated ones; verifier-backed checking
-// supersedes it whenever the policy names a Verifier.
-//
-// baseTtl is the per-config baseline lifetime (resolveConfigTtl). Every
-// "full TTL" outcome uses it verbatim; the soft-mode penalty shortens it
-// but never lengthens it.
+// evaluateAttestationPolicy applies a policy to a request's attestation and
+// returns the resulting decision. baseTtl is the lifetime granted when the
+// request is allowed at full trust. With no policy or the policy off, the
+// request is allowed at baseTtl without inspecting the attestation.
 func evaluateAttestationPolicy(
 	policy *AttestationPolicy,
 	attestation AttestationBlob,
 	verifier AttestationVerifier,
 	baseTtl time.Duration,
 ) attestationDecision {
+	// No policy, or policy off: allow at full TTL, attestation ignored.
 	if policy == nil || policy.Mode == AttestationModeOff {
 		return attestationDecision{ttl: baseTtl}
 	}
 
-	// Run the verifier if one is configured for this policy. The
-	// verdict supersedes the "claimed attestation" signal; without a
-	// verifier we fall back to the claimed-only check.
-	//
-	// Apple App Attest's verification needs the per-config appId,
-	// which the generic AttestationVerifier interface doesn't carry.
-	// We route through the type-specific entry point when we
-	// recognize the App Attest verifier.
+	// Run the verifier when one is configured and a token is present. A verifier
+	// error is folded into an unverified verdict rather than failing evaluation.
 	var verdict *Verdict
 	if verifier != nil && attestation.Token != "" {
 		var v Verdict
@@ -126,41 +69,28 @@ func evaluateAttestationPolicy(
 			v, err = verifier.Verify(attestation)
 		}
 		if err != nil {
-			// Verifier couldn't produce a verdict at all (malformed
-			// input). Treat as "not verified" — caller's policy
-			// decides whether that's a reject.
+
 			v = Verdict{Verified: false, Reason: "verifier error: " + err.Error()}
 		}
 		verdict = &v
 	}
 
-	// "attested" means: if a verifier is configured, it produced
-	// Verified=true AND any additional policy requirements
-	// (RequireHardwareBacked, RequireTrustedRoot) are satisfied;
-	// otherwise, the client just claimed attestation (claimed-attestation fallback).
+	// Decide whether the request counts as attested. With a verdict, start from
+	// Verified and clear it if any enabled requirement is unmet. Without a
+	// verifier, fall back to whether the blob merely claims an attestation.
 	attested := false
 	if verdict != nil {
 		attested = verdict.Verified
 		if policy.RequireHardwareBacked && !verdict.HardwareBacked {
-			// Hardware requirement isn't met. Treat as unattested
-			// regardless of Verified — software-only keys don't
-			// satisfy a policy that demands TEE/StrongBox.
+
 			attested = false
 		}
 		if policy.RequireTrustedRoot && !verdict.TrustedRoot {
-			// Chain-to-Google requirement isn't met. The leaf may
-			// have parsed cleanly and claimed StrongBox, but it
-			// didn't terminate at a known Google AKA root, so the
-			// hardware claim isn't cryptographically backed.
+
 			attested = false
 		}
 		if policy.RequireVerifiedBoot && !(verdict.VerifiedBootState == "verified" && verdict.DeviceLocked) {
-			// Verified-boot requirement isn't met. The chain may
-			// anchor at Google AND the key may be hardware-backed,
-			// but the device's bootloader was unlocked OR the OS
-			// image wasn't signed by the OEM key. Reject — the
-			// rooted-recipient threat is exactly what this gate
-			// is for.
+
 			attested = false
 		}
 	} else {
@@ -168,6 +98,7 @@ func evaluateAttestationPolicy(
 	}
 
 	switch policy.Mode {
+	// Observe: never reject and never shorten the TTL; just record the outcome.
 	case AttestationModeObserve:
 		return attestationDecision{
 			ttl:            baseTtl,
@@ -175,20 +106,21 @@ func evaluateAttestationPolicy(
 			verdict:        verdict,
 		}
 
+	// Soft: allow either way, but grant only the soft-failure TTL (capped at
+	// baseTtl) when the request is not attested.
 	case AttestationModeSoft:
 		if attested {
 			return attestationDecision{ttl: baseTtl, verdict: verdict}
 		}
-		// Short TTL for unattested requests under soft mode. Bounds the
-		// blast radius if this device turns out to be compromised. Capped
-		// at baseTtl so a short per-config baseline isn't lengthened by a
-		// larger soft-failure value.
+
 		ttl := softFailureTtl(policy)
 		if ttl > baseTtl {
 			ttl = baseTtl
 		}
 		return attestationDecision{ttl: ttl, verdict: verdict}
 
+	// Strict: allow at full TTL when attested, otherwise reject with a reason
+	// describing the specific requirement that was not met.
 	case AttestationModeStrict:
 		if attested {
 			return attestationDecision{ttl: baseTtl, verdict: verdict}
@@ -196,8 +128,7 @@ func evaluateAttestationPolicy(
 		reason := "no attestation claimed"
 		if verdict != nil {
 			reason = "verifier rejected: " + verdict.Reason
-			// Layered checks ordered most-specific last so the final
-			// reason names the exact gate that failed.
+
 			if policy.RequireHardwareBacked && !verdict.HardwareBacked {
 				reason = "requireHardwareBacked: got " + verdict.SecurityLevel
 			}
@@ -219,16 +150,13 @@ func evaluateAttestationPolicy(
 		}
 	}
 
-	// Unrecognized mode shouldn't happen — validAttestationMode runs at
-	// configs.json load. Defense in depth: treat as "off".
+	// Unrecognized mode: allow at full TTL.
 	return attestationDecision{ttl: baseTtl}
 }
 
-// claimsAttestation returns true when the recipient sent something in the
-// attestation field that's worth at least logging. The bar is low:
-// platform != NONE and a non-empty token. This is the claimed-only
-// fallback used when no Verifier is configured — once a Verifier runs, its
-// Verdict supersedes this signal.
+// claimsAttestation reports whether a blob purports to carry an attestation,
+// without verifying it: it must name a platform other than NONE and carry a
+// token. Used as the fallback when no verifier runs.
 func claimsAttestation(a AttestationBlob) bool {
 	if a.Platform == "" || a.Platform == "NONE" {
 		return false
@@ -239,9 +167,8 @@ func claimsAttestation(a AttestationBlob) bool {
 	return true
 }
 
-// softFailureTtl returns the TTL to use under soft mode when the client
-// didn't claim attestation. Falls back to defaultSoftFailureTtlSec if the
-// policy doesn't override it.
+// softFailureTtl returns the TTL granted to an unattested request under soft
+// mode, falling back to defaultSoftFailureTtlSec when none is configured.
 func softFailureTtl(policy *AttestationPolicy) time.Duration {
 	sec := policy.SoftFailureTtlSec
 	if sec <= 0 {
@@ -250,21 +177,9 @@ func softFailureTtl(policy *AttestationPolicy) time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
-// resolveIssuanceLimit picks the per-(device, config) issuance rate
-// limit from the policy. Truth table:
-//
-//   policy == nil OR mode == "off"
-//     -> 0 (no limit). Preserves back-compat for deployments
-//     that haven't configured any policy.
-//   policy.MaxIssuancesPerHour > 0
-//     -> use the configured value.
-//   policy.MaxIssuancesPerHour <= 0 AND mode != "off"
-//     -> defaultMaxIssuancesPerHour (10). Sensible cap whenever the
-//     creator's said anything about attestation.
-//
-// Returned value is the requests/hour cap; a window of exactly 1 hour
-// is hardcoded in the handler (no per-policy window override yet —
-// keeps the policy surface small).
+// resolveIssuanceLimit returns the per-hour issuance cap a policy imposes. It
+// returns 0 (no limit) when there is no policy or the policy is off, the
+// configured cap when positive, and otherwise defaultMaxIssuancesPerHour.
 func resolveIssuanceLimit(policy *AttestationPolicy) int {
 	if policy == nil || policy.Mode == AttestationModeOff {
 		return 0
@@ -275,13 +190,9 @@ func resolveIssuanceLimit(policy *AttestationPolicy) int {
 	return defaultMaxIssuancesPerHour
 }
 
-// strictDeviceAttestationPolicy is the AttestationPolicy the app's "block rooted
-// devices" toggle maps to: refuse issuance to any device that isn't a stock,
-// OEM-locked phone presenting a hardware-attested key, chained to a Google AKA
-// root, with verified boot. This is the configuration that actually blocks
-// rooted / emulated / modified devices (see docs threat-model §3.4e) — the only
-// place that check can be truly enforced. Android only; Apple App Attest needs a
-// per-config appId and is configured separately.
+// strictDeviceAttestationPolicy returns a strict policy that requires a
+// hardware-backed key, a trusted root, and verified boot via the
+// android-key-attestation verifier.
 func strictDeviceAttestationPolicy() *AttestationPolicy {
 	return &AttestationPolicy{
 		Mode:                  AttestationModeStrict,

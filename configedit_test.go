@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// Appending, in-place replacing (same configId), and removing a config all persist to configs.json,
+// and removing an absent id is an error.
 func TestConsoleConfigReplaceRemove(t *testing.T) {
 	c, err := newConsole(t.TempDir())
 	if err != nil {
@@ -16,8 +18,7 @@ func TestConsoleConfigReplaceRemove(t *testing.T) {
 		t.Fatalf("appendConfig: %v", err)
 	}
 
-	// Replace the whole config body; the configId must be preserved so existing
-	// share links / handout files keep resolving.
+	// Replacing the body keeps the same configId; only the stored config changes.
 	newBody := json.RawMessage(`{"name":"b","type":"SSH","sshConfig":{"sshHost":"h"}}`)
 	if err := c.updateConfigBody(id, func(json.RawMessage) (json.RawMessage, error) {
 		return newBody, nil
@@ -34,7 +35,6 @@ func TestConsoleConfigReplaceRemove(t *testing.T) {
 		t.Errorf("replace didn't swap the body: %v", m)
 	}
 
-	// Remove, then a second remove should report not-found.
 	if err := c.removeConfig(id); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
@@ -46,9 +46,10 @@ func TestConsoleConfigReplaceRemove(t *testing.T) {
 	}
 }
 
+// decodeConfigRegistration handles a registration bundle (plain or base64url), unwrapping the inner
+// config and its use-restriction policy, and treats a bare config body as a zero policy.
 func TestDecodeConfigRegistration(t *testing.T) {
-	// App "Copy for creator-server" bundle: the inner body and blockRooted are
-	// split out; the wrapper fields never reach the stored body.
+
 	bundle := `{"kind":"npv-config-registration","v":1,"config":{"name":"a","type":"V2RAY"},` +
 		`"blockRooted":true,"onlyMobileNetwork":true,"expiresAt":"2030-01-01T00:00:00Z","displayMessage":"hi"}`
 	body, rp, err := decodeConfigRegistration(bundle)
@@ -68,17 +69,17 @@ func TestDecodeConfigRegistration(t *testing.T) {
 	if _, ok := m["kind"]; ok {
 		t.Error("bundle body must not carry the registration wrapper fields")
 	}
-	// The use restrictions become an envelope policy the issuer stamps on issued configs.
+
+	// A populated policy maps to a non-nil issued policy carrying the restrictions forward.
 	if ip := issuedPolicyFrom(rp); ip == nil || !ip.OnlyMobileNetwork || ip.ExpiresAt == nil {
 		t.Errorf("issuedPolicyFrom dropped restrictions: %+v", ip)
 	}
 
-	// base64url of the same bundle decodes identically.
+	// The same bundle is accepted base64url-encoded.
 	if _, rp2, err := decodeConfigRegistration(b64url.EncodeToString([]byte(bundle))); err != nil || !rp2.blockRooted {
 		t.Errorf("base64 bundle: blockRooted=%v err=%v", rp2.blockRooted, err)
 	}
 
-	// A bare config body (no wrapper) → body as-is, zero policy.
 	body2, rp3, err := decodeConfigRegistration(`{"type":"SSH","sshConfig":{"sshHost":"h"}}`)
 	if err != nil {
 		t.Fatalf("bare: %v", err)
@@ -92,6 +93,7 @@ func TestDecodeConfigRegistration(t *testing.T) {
 	}
 }
 
+// handoutFilename builds the .npvs handout path from truncated configId and pubkey prefixes.
 func TestHandoutFilename(t *testing.T) {
 	got := handoutFilename("/s", "configIdLong123456", "pubKeyLong123456")
 	want := filepath.Join("/s", "handout-configId-pubKeyLo.npvs")

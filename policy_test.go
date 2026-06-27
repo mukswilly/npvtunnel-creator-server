@@ -16,10 +16,7 @@ import (
 	"time"
 )
 
-// ──────────────────────────────────────────────────────────────────
-// Pure-function: evaluateAttestationPolicy / chooseTtl truth table
-// ──────────────────────────────────────────────────────────────────
-
+// A nil policy and explicit off mode never reject and always grant the full TTL.
 func TestPolicyOffIgnoresAttestation(t *testing.T) {
 	for _, att := range []AttestationBlob{
 		{Platform: "NONE", Token: "", Nonce: "n"},
@@ -39,6 +36,7 @@ func TestPolicyOffIgnoresAttestation(t *testing.T) {
 	}
 }
 
+// Observe mode requests logging but never rejects or shortens the TTL.
 func TestPolicyObserveLogsButDoesNotBlock(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeObserve}
 	for _, att := range []AttestationBlob{
@@ -58,6 +56,7 @@ func TestPolicyObserveLogsButDoesNotBlock(t *testing.T) {
 	}
 }
 
+// Soft mode admits an unattested request but caps it to the configured short TTL.
 func TestPolicySoftShortensTtlWhenUnattested(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeSoft, SoftFailureTtlSec: 60}
 	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, defaultConfigTtl)
@@ -69,8 +68,9 @@ func TestPolicySoftShortensTtlWhenUnattested(t *testing.T) {
 	}
 }
 
+// Soft mode falls back to the default short TTL when SoftFailureTtlSec is unset.
 func TestPolicySoftUsesDefaultTtlWhenNotConfigured(t *testing.T) {
-	p := &AttestationPolicy{Mode: AttestationModeSoft} // SoftFailureTtlSec unset = 0
+	p := &AttestationPolicy{Mode: AttestationModeSoft}
 	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, defaultConfigTtl)
 	expected := time.Duration(defaultSoftFailureTtlSec) * time.Second
 	if d.ttl != expected {
@@ -78,6 +78,7 @@ func TestPolicySoftUsesDefaultTtlWhenNotConfigured(t *testing.T) {
 	}
 }
 
+// Soft mode grants the full TTL once the request actually carries attestation.
 func TestPolicySoftFullTtlWhenAttested(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeSoft, SoftFailureTtlSec: 60}
 	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "ANDROID", Token: "tok"}, nil, defaultConfigTtl)
@@ -86,6 +87,7 @@ func TestPolicySoftFullTtlWhenAttested(t *testing.T) {
 	}
 }
 
+// Strict mode rejects a request that makes no attestation claim.
 func TestPolicyStrictRejectsUnattested(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeStrict}
 	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, defaultConfigTtl)
@@ -94,6 +96,7 @@ func TestPolicyStrictRejectsUnattested(t *testing.T) {
 	}
 }
 
+// Strict mode admits an attested request at the full TTL.
 func TestPolicyStrictAllowsAttested(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeStrict}
 	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "ANDROID", Token: "tok"}, nil, defaultConfigTtl)
@@ -105,6 +108,7 @@ func TestPolicyStrictAllowsAttested(t *testing.T) {
 	}
 }
 
+// A claim requires both a real platform (not NONE) and a non-empty token.
 func TestClaimsAttestationRequiresBothPlatformAndToken(t *testing.T) {
 	if claimsAttestation(AttestationBlob{Platform: "ANDROID", Token: ""}) {
 		t.Fatalf("empty token must not count as claim")
@@ -120,10 +124,7 @@ func TestClaimsAttestationRequiresBothPlatformAndToken(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Load-time validation
-// ──────────────────────────────────────────────────────────────────
-
+// An unrecognized policy mode fails the config load with the valid-modes list.
 func TestConfigsFileRejectsInvalidAttestationMode(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
@@ -141,6 +142,7 @@ func TestConfigsFileRejectsInvalidAttestationMode(t *testing.T) {
 	}
 }
 
+// A negative softFailureTtlSec is rejected at config load.
 func TestConfigsFileRejectsNegativeSoftFailureTtl(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
@@ -155,6 +157,7 @@ func TestConfigsFileRejectsNegativeSoftFailureTtl(t *testing.T) {
 	}
 }
 
+// Every defined policy mode is accepted at config load.
 func TestConfigsFileAcceptsAllValidModes(t *testing.T) {
 	for _, mode := range []string{
 		AttestationModeOff, AttestationModeObserve,
@@ -162,8 +165,7 @@ func TestConfigsFileAcceptsAllValidModes(t *testing.T) {
 	} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
-			// Each mode-iteration runs in its own t.TempDir() so the same
-			// configId across modes doesn't collide at load time.
+
 			raw := `[{
 				"configId": "AAAAAAAAAAAAAAAAAAAAAA",
 				"config": {"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}},
@@ -178,10 +180,8 @@ func TestConfigsFileAcceptsAllValidModes(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// End-to-end: enforcement at /v1/issue
-// ──────────────────────────────────────────────────────────────────
-
+// End to end: a strict-mode config returns 401 attestation_failed when the
+// signed request carries no attestation.
 func TestIssueStrictModeRejectsRequestWithoutAttestation(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
@@ -194,7 +194,6 @@ func TestIssueStrictModeRejectsRequestWithoutAttestation(t *testing.T) {
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
-	// buildSignedIssueRequest defaults to AttestationPlatform "NONE" + empty token.
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
 	body, _ := json.Marshal(req)
@@ -209,6 +208,8 @@ func TestIssueStrictModeRejectsRequestWithoutAttestation(t *testing.T) {
 	}
 }
 
+// End to end: a strict-mode config admits a request that claims attestation
+// (no verifier configured, so the mere claim suffices).
 func TestIssueStrictModeAllowsRequestWithAttestation(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
@@ -223,11 +224,11 @@ func TestIssueStrictModeAllowsRequestWithAttestation(t *testing.T) {
 
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
-	// Override default NONE attestation with a claimed (unverified) token.
-	// This mode doesn't verify, just checks presence.
+
 	req.Attestation.Platform = "ANDROID"
 	req.Attestation.Token = "fake-play-integrity-token"
-	// Re-sign because attestation.token is in the canonical signing input.
+
+	// Re-sign after mutating the attestation, which is part of the signed input.
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
 	body, _ := json.Marshal(req)
@@ -239,6 +240,8 @@ func TestIssueStrictModeAllowsRequestWithAttestation(t *testing.T) {
 	}
 }
 
+// End to end: a soft-mode config admits an unattested request but the granted
+// config expires after roughly the configured short TTL.
 func TestIssueSoftModeShortensTtlForUnattestedRequest(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
@@ -270,15 +273,16 @@ func TestIssueSoftModeShortensTtlForUnattestedRequest(t *testing.T) {
 		t.Fatalf("parse expiresAt: %v", err)
 	}
 	gap := expires.Sub(before)
-	// Should be ~60 seconds, generously bounded to handle test scheduler jitter.
+
 	if gap < 30*time.Second || gap > 90*time.Second {
 		t.Fatalf("expected ~60s TTL for soft+unattested, got %v", gap)
 	}
 }
 
+// End to end: a config with no policy block uses the full default TTL.
 func TestIssueOffModeUsesFullTtlRegardlessOfAttestation(t *testing.T) {
 	dir := t.TempDir()
-	// No attestationPolicy field = "off" by default.
+
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
 		"config": {"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}}
@@ -301,16 +305,13 @@ func TestIssueOffModeUsesFullTtlRegardlessOfAttestation(t *testing.T) {
 	expires, _ := time.Parse(time.RFC3339, resp.ExpiresAt)
 
 	gap := expires.Sub(before)
-	// defaultConfigTtl is 1 hour.
+
 	if gap < 50*time.Minute || gap > 70*time.Minute {
 		t.Fatalf("expected ~1h TTL with no policy, got %v", gap)
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Configurable config TTL (configTtlSec)
-// ──────────────────────────────────────────────────────────────────
-
+// resolveConfigTtl falls back to the default unless the entry overrides it.
 func TestResolveConfigTtl(t *testing.T) {
 	if got := resolveConfigTtl(nil); got != defaultConfigTtl {
 		t.Fatalf("nil entry: got %v, want default %v", got, defaultConfigTtl)
@@ -323,7 +324,8 @@ func TestResolveConfigTtl(t *testing.T) {
 	}
 }
 
-// A custom baseline propagates through every "full TTL" outcome.
+// Across every non-shortening outcome, the decision passes the caller's base TTL
+// through unchanged rather than substituting the package default.
 func TestPolicyHonorsBaseTtl(t *testing.T) {
 	base := 3 * time.Hour
 	cases := []struct {
@@ -350,11 +352,10 @@ func TestPolicyHonorsBaseTtl(t *testing.T) {
 	}
 }
 
-// The soft-mode penalty shortens but never lengthens the baseline: when
-// the baseline is shorter than the soft-failure value, the baseline wins.
+// A soft-failure TTL longer than the base is clamped down to the base.
 func TestPolicySoftFailureCappedAtBaseTtl(t *testing.T) {
 	base := 2 * time.Minute
-	// SoftFailureTtlSec (5m) deliberately larger than the baseline.
+
 	p := &AttestationPolicy{Mode: AttestationModeSoft, SoftFailureTtlSec: 300}
 	d := evaluateAttestationPolicy(p, AttestationBlob{Platform: "NONE"}, nil, base)
 	if d.ttl != base {
@@ -362,18 +363,22 @@ func TestPolicySoftFailureCappedAtBaseTtl(t *testing.T) {
 	}
 }
 
+// configTtlSec below the allowed floor fails the config load.
 func TestConfigsFileRejectsConfigTtlBelowFloor(t *testing.T) {
-	assertConfigTtlLoadError(t, 30) // floor is 60
+	assertConfigTtlLoadError(t, 30)
 }
 
+// configTtlSec one second past the ceiling fails the config load.
 func TestConfigsFileRejectsConfigTtlAboveCeiling(t *testing.T) {
 	assertConfigTtlLoadError(t, int(configTtlMax.Seconds())+1)
 }
 
+// A negative configTtlSec fails the config load.
 func TestConfigsFileRejectsNegativeConfigTtl(t *testing.T) {
 	assertConfigTtlLoadError(t, -1)
 }
 
+// A configTtlSec inside the allowed range loads successfully.
 func TestConfigsFileAcceptsValidConfigTtl(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
@@ -387,8 +392,8 @@ func TestConfigsFileAcceptsValidConfigTtl(t *testing.T) {
 	}
 }
 
-// assertConfigTtlLoadError writes a configs.json with the given configTtlSec
-// and asserts NewStateWithDir refuses it with a configTtlSec-naming error.
+// assertConfigTtlLoadError writes a config with the given configTtlSec and
+// asserts the load fails citing configTtlSec.
 func assertConfigTtlLoadError(t *testing.T, sec int) {
 	t.Helper()
 	dir := t.TempDir()
@@ -407,7 +412,7 @@ func assertConfigTtlLoadError(t *testing.T, sec int) {
 	}
 }
 
-// End-to-end: a configured configTtlSec drives the issued expiresAt.
+// End to end: the granted config's expiry reflects the per-config configTtlSec.
 func TestIssueHonorsConfiguredConfigTtl(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
@@ -439,7 +444,7 @@ func TestIssueHonorsConfiguredConfigTtl(t *testing.T) {
 	}
 
 	gap := expires.Sub(before)
-	// configTtlSec=7200 → ~2h, allowing slack for request processing.
+
 	if gap < 110*time.Minute || gap > 130*time.Minute {
 		t.Fatalf("expected ~2h TTL from configTtlSec=7200, got %v", gap)
 	}

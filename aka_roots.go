@@ -7,36 +7,21 @@ import (
 	"fmt"
 )
 
-// Google's Android Key Attestation root certificates, embedded at build
-// time so a fresh creator-server deployment can verify hardware
-// attestation chains the day the operator runs the binary.
-//
-// No-creator-burden rationale: the operator doesn't fetch or place root
-// certs; they ship inside the binary. The roots are
-// public (https://android.googleapis.com/attestation/root) and rotate on
-// year-plus timescales, so compiled-in is the right granularity.
-//
-// To refresh: re-fetch from the URL above, replace the file content, and
-// rebuild. See attestation-roots/google-aka-roots.pem for the provenance
-// comment and current cert summary.
+// googleAkaRootsPEM holds the PEM-encoded trusted root certificates, embedded
+// into the binary at build time, that attestation chains are anchored to.
 //
 //go:embed attestation-roots/google-aka-roots.pem
 var googleAkaRootsPEM []byte
 
-// loadGoogleAkaRoots parses the embedded PEM bundle into an
-// *x509.CertPool. Called once at verifier-registry construction.
-//
-// Returns an error if the bundle is empty or contains no parseable
-// certs — that would be a build-time mistake (somebody truncated or
-// corrupted the file), and we want it to surface loudly rather than
-// silently produce a verifier that trusts nothing.
+// loadGoogleAkaRoots parses the embedded roots PEM into a certificate pool for
+// use as the trust anchor when verifying attestation chains.
 func loadGoogleAkaRoots() (*x509.CertPool, error) {
 	return parseRootsPEM(googleAkaRootsPEM)
 }
 
-// parseRootsPEM is the parsing primitive, exposed separately from
-// loadGoogleAkaRoots so tests can build alternate pools (e.g. a pool
-// containing a synthetic test root) without touching the embed.
+// parseRootsPEM decodes every CERTIFICATE block in a PEM byte slice and adds it
+// to a fresh certificate pool. Non-certificate blocks are skipped. It returns an
+// error if a certificate fails to parse or if the input contains none.
 func parseRootsPEM(pemBytes []byte) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
 	rest := pemBytes
@@ -44,13 +29,11 @@ func parseRootsPEM(pemBytes []byte) (*x509.CertPool, error) {
 	for len(rest) > 0 {
 		var block *pem.Block
 		block, rest = pem.Decode(rest)
-		if block == nil {
-			// pem.Decode returns nil when it can't find another PEM
-			// block. Any remaining bytes are non-PEM noise (file
-			// trailer / comments) — fine to stop here.
+		if block == nil { // no further PEM block could be decoded
+
 			break
 		}
-		if block.Type != "CERTIFICATE" {
+		if block.Type != "CERTIFICATE" { // ignore any non-certificate PEM blocks
 			continue
 		}
 		cert, err := x509.ParseCertificate(block.Bytes)

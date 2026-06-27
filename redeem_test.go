@@ -17,19 +17,11 @@ import (
 	"time"
 )
 
-// All redeem tests share one configId because their assertions don't
-// depend on routing between multiple configs — they're about token
-// lifecycle, envelope shape, persistence, and concurrency. The constant
-// is defined in mint_share_link_test.go (same package) so this file
-// just references testCID.
-
-// TestRedeemRoundTrip is the happy path: a registered token + a
-// recipient pubkey + a config in configs.json all line up and the
-// endpoint returns a sealed V2 envelope addressed to the recipient.
+// TestRedeemRoundTrip verifies a valid token yields a 200 with an octet-stream envelope whose
+// header carries the token's configId, and that one redemption decrements the remaining count.
 func TestRedeemRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 
-	// configs.json: one entry the token will point at.
 	writeConfigs(t, dir, []ConfigEntry{
 		{
 			ConfigID: testCID,
@@ -52,7 +44,6 @@ func TestRedeemRoundTrip(t *testing.T) {
 	}
 	state.PublicIssuerURL = "https://issuer.example/v1/issue"
 
-	// Pre-register a redemption token pointing at testCID.
 	const tokenStr = "TEST-token-aaaaaaaaaaaaaaaaaaaa"
 	if err := state.AddRedemptionToken(RedemptionToken{
 		Token:                tokenStr,
@@ -67,7 +58,6 @@ func TestRedeemRoundTrip(t *testing.T) {
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
-	// Recipient: real P-256 keypair, send the compressed pubkey.
 	recipientPubCompressed := freshRecipientPubkey(t)
 
 	req := RedeemRequest{
@@ -86,8 +76,6 @@ func TestRedeemRoundTrip(t *testing.T) {
 		t.Fatalf("status %d, body %s", httpResp.StatusCode, envelopeBytes)
 	}
 
-	// Response must be the raw envelope bytes — verify by running them
-	// through the same envelope decoder a recipient would use.
 	if got := httpResp.Header.Get("Content-Type"); got != "application/octet-stream" {
 		t.Errorf("Content-Type = %q, want application/octet-stream", got)
 	}
@@ -99,16 +87,11 @@ func TestRedeemRoundTrip(t *testing.T) {
 		t.Fatalf("expected 1 recipient, got %d", len(dec.Header.Recipients))
 	}
 
-	// The envelope's header configId MUST equal the token's configId.
-	// This is the load-bearing property: the recipient reads this
-	// configId from the header, sends it to /v1/issue, and the server
-	// routes via the SAME value.
 	if dec.Header.ConfigID != testCID {
 		t.Errorf("envelope header configId = %q, want token's configId %q",
 			dec.Header.ConfigID, testCID)
 	}
 
-	// Token's RemainingRedemptions should now be 2.
 	got := state.LookupRedemptionToken(tokenStr)
 	if got == nil {
 		t.Fatalf("token disappeared after redemption")
@@ -118,10 +101,7 @@ func TestRedeemRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRedeemReusesConfigIDAcrossRedemptions confirms the documented
-// RedemptionToken property: two recipients redeeming the same token
-// get envelopes with the SAME configId, so a recipient redeeming on
-// two devices can recognize them as the same logical config.
+// TestRedeemReusesConfigIDAcrossRedemptions verifies repeated redemptions of one token all carry the same configId.
 func TestRedeemReusesConfigIDAcrossRedemptions(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -156,7 +136,7 @@ func TestRedeemReusesConfigIDAcrossRedemptions(t *testing.T) {
 	}
 }
 
-// TestRedeemUnknownTokenReturns404 — the token doesn't exist.
+// TestRedeemUnknownTokenReturns404 verifies an unregistered token returns 404 with a token_not_found code.
 func TestRedeemUnknownTokenReturns404(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -183,8 +163,7 @@ func TestRedeemUnknownTokenReturns404(t *testing.T) {
 	}
 }
 
-// TestRedeemExhaustedReturns410 — the token was registered but its
-// remaining count is 0.
+// TestRedeemExhaustedReturns410 verifies a token with no remaining redemptions returns 410 with a token_exhausted code.
 func TestRedeemExhaustedReturns410(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -217,7 +196,7 @@ func TestRedeemExhaustedReturns410(t *testing.T) {
 	}
 }
 
-// TestRedeemExpiredReturns410 — token has an expiresAt in the past.
+// TestRedeemExpiredReturns410 verifies a token past its expiry returns 410 with a token_expired code.
 func TestRedeemExpiredReturns410(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -230,7 +209,7 @@ func TestRedeemExpiredReturns410(t *testing.T) {
 		Token:                "old",
 		ConfigID:             testCID,
 		RemainingRedemptions: 5,
-		ExpiresAt:            "2025-01-01T00:00:00Z", // way in the past
+		ExpiresAt:            "2025-01-01T00:00:00Z",
 		CreatedAt:            "2024-01-01T00:00:00Z",
 	})
 	ts := newTestServerWithState(t, state)
@@ -251,8 +230,7 @@ func TestRedeemExpiredReturns410(t *testing.T) {
 	}
 }
 
-// TestRedeemMalformedPubkeyReturns400 — junk in recipientPubkey is
-// caught before the token is consumed.
+// TestRedeemMalformedPubkeyReturns400 verifies a non-base64 recipient pubkey returns 400 and does not consume a redemption.
 func TestRedeemMalformedPubkeyReturns400(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -279,7 +257,7 @@ func TestRedeemMalformedPubkeyReturns400(t *testing.T) {
 	if httpResp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", httpResp.StatusCode)
 	}
-	// Slot should NOT have been consumed.
+
 	got := state.LookupRedemptionToken("good-token")
 	if got.RemainingRedemptions != 5 {
 		t.Errorf("malformed pubkey should not have consumed a slot: remaining = %d, want 5",
@@ -287,8 +265,7 @@ func TestRedeemMalformedPubkeyReturns400(t *testing.T) {
 	}
 }
 
-// TestRedeemMissingPublicIssuerURL — operator forgot to set
-// -public-issuer-url. Should return 500 with a clear server_error.
+// TestRedeemMissingPublicIssuerURL verifies redemption fails with 500 server_error when the issuer URL is unconfigured.
 func TestRedeemMissingPublicIssuerURL(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -296,7 +273,7 @@ func TestRedeemMissingPublicIssuerURL(t *testing.T) {
 		Config:   json.RawMessage(`{"type":"V2RAY","v2rayProfile":{"password":"a1b2c3d4-0000-4000-8000-000000000001"}}`),
 	}})
 	state, _ := NewStateWithDir(dir)
-	// Deliberately DON'T set state.PublicIssuerURL.
+	// PublicIssuerURL deliberately left unset.
 	state.AddRedemptionToken(RedemptionToken{
 		Token:                "tok",
 		ConfigID:             testCID,
@@ -321,8 +298,7 @@ func TestRedeemMissingPublicIssuerURL(t *testing.T) {
 	}
 }
 
-// TestRedeemPersistsAcrossRestart — decrement is durable: write to
-// disk, reopen state, count reflects the consumed slot.
+// TestRedeemPersistsAcrossRestart verifies redemption counts survive reopening state from disk, and that the tokens file keeps owner-only permissions.
 func TestRedeemPersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -342,7 +318,6 @@ func TestRedeemPersistsAcrossRestart(t *testing.T) {
 	postRedeem(t, ts, "persist-tok", freshRecipientPubkey(t))
 	ts.Close()
 
-	// Reopen state from disk.
 	reopened, err := NewStateWithDir(dir)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
@@ -355,7 +330,7 @@ func TestRedeemPersistsAcrossRestart(t *testing.T) {
 		t.Errorf("RemainingRedemptions = %d, want 8 after 2 consumes + restart", got.RemainingRedemptions)
 	}
 
-	// File on disk has 0o600 perms (Unix).
+	// POSIX permission bits are not meaningful on Windows, so check them only elsewhere.
 	if !isWindows() {
 		info, err := os.Stat(filepath.Join(dir, "redemption-tokens.json"))
 		if err != nil {
@@ -367,12 +342,7 @@ func TestRedeemPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
-// TestRedeemConcurrentRedemptionsCannotOverdraw — N goroutines hammering
-// a token with M=1 redemption slot. Exactly one should succeed; the
-// others should all return 410 token_exhausted.
-//
-// Run this test with `go test -race` to catch any races in the
-// consume path.
+// TestRedeemConcurrentRedemptionsCannotOverdraw verifies that with one remaining redemption and many concurrent requests, exactly one succeeds and the count lands at zero.
 func TestRedeemConcurrentRedemptionsCannotOverdraw(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -419,18 +389,13 @@ func TestRedeemConcurrentRedemptionsCannotOverdraw(t *testing.T) {
 	if ok != 1 {
 		t.Fatalf("with RemainingRedemptions=1 and concurrency=%d, exactly 1 should succeed; got %d", concurrency, ok)
 	}
-	// And the on-disk state reflects RemainingRedemptions=0.
+
 	if got := state.LookupRedemptionToken("race-tok").RemainingRedemptions; got != 0 {
 		t.Errorf("RemainingRedemptions = %d, want 0", got)
 	}
 }
 
-// TestRedeemHotReloadsTokensWhenFileChanges — the load-bearing hot-reload
-// property. Server starts with an empty redemption-tokens.json (or no
-// file). A separate process (here, simulated by editing the file on
-// disk) adds a token. The next /v1/redeem call MUST honor the new
-// token without a server restart. Without hot-reload, recipients see
-// 404 until systemctl restart — a real operational papercut.
+// TestRedeemHotReloadsTokensWhenFileChanges verifies a token written to the tokens file after startup becomes redeemable without a restart.
 func TestRedeemHotReloadsTokensWhenFileChanges(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -445,7 +410,6 @@ func TestRedeemHotReloadsTokensWhenFileChanges(t *testing.T) {
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
-	// First attempt: no token registered. Should 404.
 	httpResp := postRedeemRaw(t, ts, RedeemRequest{
 		V:               1,
 		Token:           "hotload-tok",
@@ -456,14 +420,7 @@ func TestRedeemHotReloadsTokensWhenFileChanges(t *testing.T) {
 	}
 	httpResp.Body.Close()
 
-	// Simulate `creator-server mint-share-link` writing a new token
-	// to disk. The running server didn't AddRedemptionToken in-
-	// process; it has to pick this up via mtime poll.
-	//
-	// Sleep just enough that the new file's mtime is reliably after
-	// the existing file's. Most filesystems have second-resolution
-	// mtimes; tests on Windows/Linux both need ~1.1s to guarantee a
-	// strictly-later mtime even on FAT-like coarse-resolution stamps.
+	// Wait past the reload's mtime granularity so the rewritten file is seen as changed.
 	time.Sleep(1100 * time.Millisecond)
 	tokens := []RedemptionToken{{
 		Token:                "hotload-tok",
@@ -476,18 +433,13 @@ func TestRedeemHotReloadsTokensWhenFileChanges(t *testing.T) {
 		t.Fatalf("write tokens file: %v", err)
 	}
 
-	// Second attempt: same token, no restart. Should NOW succeed
-	// because the handler reloads on mtime change.
 	envBytes := postRedeem(t, ts, "hotload-tok", freshRecipientPubkey(t))
 	if len(envBytes) == 0 {
 		t.Fatalf("expected envelope bytes after hot-reload, got empty body")
 	}
 }
 
-// TestRedeemHotReloadRespectsRemovedFile — operator does `mv
-// redemption-tokens.json tokens.bak` to disable redemption. Next
-// /v1/redeem should 404 (the in-memory token from previous load is
-// dropped to match the on-disk state).
+// TestRedeemHotReloadRespectsRemovedFile verifies removing the tokens file drops its tokens, so a previously valid token then returns 404.
 func TestRedeemHotReloadRespectsRemovedFile(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -509,16 +461,12 @@ func TestRedeemHotReloadRespectsRemovedFile(t *testing.T) {
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
-	// First call succeeds.
 	postRedeem(t, ts, "will-be-removed", freshRecipientPubkey(t))
 
-	// Operator removes the file out-of-band.
 	if err := os.Remove(filepath.Join(dir, "redemption-tokens.json")); err != nil {
 		t.Fatalf("remove tokens file: %v", err)
 	}
 
-	// Next /v1/redeem hot-reloads (file missing → empty map), the
-	// token disappears, request 404s.
 	httpResp := postRedeemRaw(t, ts, RedeemRequest{
 		V:               1,
 		Token:           "will-be-removed",
@@ -530,8 +478,7 @@ func TestRedeemHotReloadRespectsRemovedFile(t *testing.T) {
 	}
 }
 
-// TestRedeemRateLimitedByIP — many requests from the same IP get
-// rate-limited.
+// TestRedeemRateLimitedByIP verifies a single IP exceeding the per-hour cap gets a 429 with a Retry-After header.
 func TestRedeemRateLimitedByIP(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -544,8 +491,6 @@ func TestRedeemRateLimitedByIP(t *testing.T) {
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
-	// Hammer the endpoint with bad-pubkey requests (which fail fast
-	// without consuming any token slot) past the per-IP limit.
 	got429 := false
 	for i := 0; i < redeemMaxPerIPPerHour+5; i++ {
 		httpResp := postRedeemRaw(t, ts, RedeemRequest{
@@ -569,13 +514,9 @@ func TestRedeemRateLimitedByIP(t *testing.T) {
 	}
 }
 
-// invalidCompressedPubkey returns a 33-byte value that is the right
-// LENGTH for a SEC 1 compressed P-256 point but is NOT on the curve
-// (x = 2^256-1 exceeds the field prime, so UnmarshalCompressed rejects
-// it). Used to prove the pre-mint validity gate fires before the
-// expensive envelope mint: a well-formed-length-but-off-curve pubkey
-// only fails *inside* mintIssuerEnvelope, so if the handler returns the
-// token-status error instead of bad_pubkey, the mint was never reached.
+// invalidCompressedPubkey returns a well-formed-length but off-curve compressed point: the
+// prefix is valid but the coordinate decodes to no point on P-256, so any attempt to use it
+// for minting must fail. Used to prove token-status checks happen before the pubkey is decoded.
 func invalidCompressedPubkey() []byte {
 	b := make([]byte, envelopeP256CompLen)
 	b[0] = 0x02
@@ -585,11 +526,8 @@ func invalidCompressedPubkey() []byte {
 	return b
 }
 
-// TestRedeemExhaustedSkipsMint confirms an exhausted token is rejected
-// BEFORE mintIssuerEnvelope runs. With an off-curve recipient pubkey,
-// the only way to get token_exhausted (rather than bad_pubkey from the
-// failed mint) is for the exhaustion check to short-circuit ahead of
-// the mint — the CPU-amplification fix.
+// TestRedeemExhaustedSkipsMint verifies an exhausted token returns 410 even with an off-curve
+// pubkey, proving the exhaustion check short-circuits before the pubkey is ever decoded for minting.
 func TestRedeemExhaustedSkipsMint(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -623,8 +561,8 @@ func TestRedeemExhaustedSkipsMint(t *testing.T) {
 	}
 }
 
-// TestRedeemExpiredSkipsMint is the expiry counterpart of
-// TestRedeemExhaustedSkipsMint.
+// TestRedeemExpiredSkipsMint verifies an expired token returns 410 even with an off-curve
+// pubkey, proving the expiry check short-circuits before the pubkey is ever decoded for minting.
 func TestRedeemExpiredSkipsMint(t *testing.T) {
 	dir := t.TempDir()
 	writeConfigs(t, dir, []ConfigEntry{{
@@ -659,10 +597,9 @@ func TestRedeemExpiredSkipsMint(t *testing.T) {
 	}
 }
 
-// TestClientIPXForwardedForTrust pins the rate-limit-key derivation:
-// X-Forwarded-For must only be believed when the immediate peer is a
-// declared trusted proxy. A direct client (no trusted proxies, or a
-// peer outside the trusted set) cannot spoof its key via the header.
+// TestClientIPXForwardedForTrust verifies clientIP only honors X-Forwarded-For from a trusted
+// proxy peer, walks the chain to the rightmost untrusted hop, and otherwise falls back to the
+// direct peer address — so a spoofed header from an untrusted peer cannot forge the client IP.
 func TestClientIPXForwardedForTrust(t *testing.T) {
 	trusted, err := parseTrustedProxies("10.0.0.0/8")
 	if err != nil {
@@ -727,20 +664,14 @@ func TestClientIPXForwardedForTrust(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// helpers
-// ──────────────────────────────────────────────────────────────────
-
-// freshRecipientPubkey returns a P-256 compressed pubkey suitable for
-// passing to a redemption request. Caller owns the key (the private
-// key is dropped; we only need the public side for this layer).
+// freshRecipientPubkey returns a freshly generated, valid 33-byte compressed P-256 recipient pubkey.
 func freshRecipientPubkey(t *testing.T) []byte {
 	t.Helper()
 	priv, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("gen pubkey: %v", err)
 	}
-	pub := priv.PublicKey().Bytes() // 65-byte uncompressed
+	pub := priv.PublicKey().Bytes()
 	compressed, err := compressUncompressedP256(pub)
 	if err != nil {
 		t.Fatalf("compress: %v", err)
@@ -748,9 +679,7 @@ func freshRecipientPubkey(t *testing.T) []byte {
 	return compressed
 }
 
-// postRedeem sends a redemption request and asserts success. Returns
-// the raw envelope bytes from the response. Fails the test on any
-// non-200.
+// postRedeem posts a redeem request and returns the envelope bytes, failing the test on any non-200.
 func postRedeem(t *testing.T, ts *httptest.Server, token string, recipientPubkey []byte) []byte {
 	t.Helper()
 	httpResp := postRedeemRaw(t, ts, RedeemRequest{
@@ -766,9 +695,7 @@ func postRedeem(t *testing.T, ts *httptest.Server, token string, recipientPubkey
 	return envelopeBytes
 }
 
-// postRedeemRaw sends a redemption request and returns the raw
-// response without asserting status code. Caller owns the response
-// body lifecycle.
+// postRedeemRaw posts a redeem request and returns the raw response without asserting status, for tests that inspect error codes.
 func postRedeemRaw(t *testing.T, ts *httptest.Server, req RedeemRequest) *http.Response {
 	t.Helper()
 	body, _ := json.Marshal(req)

@@ -8,12 +8,7 @@ import (
 	"testing"
 )
 
-// ──────────────────────────────────────────────────────────────────
-// configs.json validation
-// ──────────────────────────────────────────────────────────────────
-
-// TestConfigsFileLoadRejectsMissingConfig — registered entries must
-// supply a Config template. Forgotten field gets caught at startup.
+// An entry with a configId but no config body fails registry load.
 func TestConfigsFileLoadRejectsMissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	raw := `[{
@@ -29,9 +24,7 @@ func TestConfigsFileLoadRejectsMissingConfig(t *testing.T) {
 	}
 }
 
-// decodeIssueResponseConfig parses an /v1/issue response body and
-// returns the decoded ConfigBody as a generic map. Shared helper for
-// the tests that need to inspect the issued config.
+// decodeIssueResponseConfig parses an issue response and base64url-decodes its config payload to a map.
 func decodeIssueResponseConfig(t *testing.T, respBytes []byte) map[string]any {
 	t.Helper()
 	var resp IssueResponse

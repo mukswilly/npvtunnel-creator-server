@@ -15,10 +15,7 @@ import (
 	"time"
 )
 
-// ──────────────────────────────────────────────────────────────────
-// Pure rateLimiter mechanics
-// ──────────────────────────────────────────────────────────────────
-
+// Requests up to the limit are allowed.
 func TestRateLimiterAllowsUnderLimit(t *testing.T) {
 	rl := newRateLimiter()
 	for i := 0; i < 5; i++ {
@@ -29,6 +26,7 @@ func TestRateLimiterAllowsUnderLimit(t *testing.T) {
 	}
 }
 
+// The first request past the limit is blocked and carries a positive RetryAfter.
 func TestRateLimiterBlocksOverLimit(t *testing.T) {
 	rl := newRateLimiter()
 	for i := 0; i < 5; i++ {
@@ -43,8 +41,9 @@ func TestRateLimiterBlocksOverLimit(t *testing.T) {
 	}
 }
 
+// Each key has its own budget: exhausting one leaves another unaffected.
 func TestRateLimiterIsolatesKeys(t *testing.T) {
-	// alice hits the limit; bob is unaffected.
+
 	rl := newRateLimiter()
 	for i := 0; i < 5; i++ {
 		rl.Allow("alice", 5, time.Hour)
@@ -57,24 +56,24 @@ func TestRateLimiterIsolatesKeys(t *testing.T) {
 	}
 }
 
+// A key stays blocked within the window and is allowed once the oldest
+// hits age out past it.
 func TestRateLimiterWindowSlides(t *testing.T) {
-	// Fake clock so we can advance time deterministically.
+
 	rl := newRateLimiter()
 	base := time.Unix(1_700_000_000, 0)
 	currentTime := base
-	rl.now = func() time.Time { return currentTime }
+	rl.now = func() time.Time { return currentTime } // inject a movable clock
 
-	// Burn through the limit at t=0.
 	for i := 0; i < 5; i++ {
 		rl.Allow("alice", 5, time.Hour)
 	}
-	// Still blocked at t=0+30 min.
+
 	currentTime = base.Add(30 * time.Minute)
 	if rl.Allow("alice", 5, time.Hour).Allowed {
 		t.Fatalf("alice still over limit at +30min")
 	}
-	// Once past the 1-hour window (+1h 1s), the oldest of the 5 has dropped
-	// off. Allowed should be true.
+
 	currentTime = base.Add(time.Hour + time.Second)
 	d := rl.Allow("alice", 5, time.Hour)
 	if !d.Allowed {
@@ -82,6 +81,7 @@ func TestRateLimiterWindowSlides(t *testing.T) {
 	}
 }
 
+// A limit of zero means no limit.
 func TestRateLimiterZeroLimitIsUnlimited(t *testing.T) {
 	rl := newRateLimiter()
 	for i := 0; i < 1000; i++ {
@@ -92,13 +92,14 @@ func TestRateLimiterZeroLimitIsUnlimited(t *testing.T) {
 	}
 }
 
+// RetryAfter reflects when the oldest hit leaves the window: blocked 10min in,
+// the next slot frees 50min later.
 func TestRateLimiterRetryAfterIsAccurate(t *testing.T) {
-	// When the limit is hit at t=0 with 5 reqs, the oldest will drop off
-	// at t=1h. Asking again at t=10min should report RetryAfter ~= 50min.
+
 	rl := newRateLimiter()
 	base := time.Unix(1_700_000_000, 0)
 	current := base
-	rl.now = func() time.Time { return current }
+	rl.now = func() time.Time { return current } // inject a movable clock
 
 	for i := 0; i < 5; i++ {
 		rl.Allow("alice", 5, time.Hour)
@@ -108,7 +109,7 @@ func TestRateLimiterRetryAfterIsAccurate(t *testing.T) {
 	if d.Allowed {
 		t.Fatalf("should still be blocked")
 	}
-	// Expect ~50 min. Allow ±10s jitter for any nanosecond arithmetic.
+
 	expected := 50 * time.Minute
 	delta := d.RetryAfter - expected
 	if delta < -10*time.Second || delta > 10*time.Second {
@@ -116,18 +117,18 @@ func TestRateLimiterRetryAfterIsAccurate(t *testing.T) {
 	}
 }
 
+// Sweep drops keys whose entire window has aged out, bounding memory.
 func TestRateLimiterSweepEvictsCold(t *testing.T) {
 	rl := newRateLimiter()
 	base := time.Unix(1_700_000_000, 0)
 	current := base
-	rl.now = func() time.Time { return current }
+	rl.now = func() time.Time { return current } // inject a movable clock
 
-	// Add an entry for alice.
 	rl.Allow("alice", 10, time.Hour)
 	if rl.Size() != 1 {
 		t.Fatalf("size after first allow = %d, want 1", rl.Size())
 	}
-	// Advance well past the window and sweep.
+
 	current = base.Add(2 * time.Hour)
 	rl.Sweep(time.Hour)
 	if rl.Size() != 0 {
@@ -135,22 +136,21 @@ func TestRateLimiterSweepEvictsCold(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// resolveIssuanceLimit
-// ──────────────────────────────────────────────────────────────────
-
+// No attestation policy means no issuance limit.
 func TestResolveIssuanceLimitNilPolicyIsUnlimited(t *testing.T) {
 	if resolveIssuanceLimit(nil) != 0 {
 		t.Fatalf("nil policy must be unlimited")
 	}
 }
 
+// Attestation mode "off" means no issuance limit.
 func TestResolveIssuanceLimitOffModeIsUnlimited(t *testing.T) {
 	if resolveIssuanceLimit(&AttestationPolicy{Mode: AttestationModeOff}) != 0 {
 		t.Fatalf("off mode must be unlimited")
 	}
 }
 
+// Any active mode without an explicit cap falls back to the default per-hour limit.
 func TestResolveIssuanceLimitDefaultsWhenModeSetButLimitAbsent(t *testing.T) {
 	for _, mode := range []string{
 		AttestationModeObserve, AttestationModeSoft, AttestationModeStrict,
@@ -163,6 +163,7 @@ func TestResolveIssuanceLimitDefaultsWhenModeSetButLimitAbsent(t *testing.T) {
 	}
 }
 
+// An explicit MaxIssuancesPerHour overrides the default.
 func TestResolveIssuanceLimitHonorsExplicitOverride(t *testing.T) {
 	p := &AttestationPolicy{Mode: AttestationModeStrict, MaxIssuancesPerHour: 3}
 	if resolveIssuanceLimit(p) != 3 {
@@ -170,10 +171,8 @@ func TestResolveIssuanceLimitHonorsExplicitOverride(t *testing.T) {
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────
-// End-to-end via /v1/issue
-// ──────────────────────────────────────────────────────────────────
-
+// Once a config's per-hour cap is reached, /v1/issue returns 429 with a
+// Retry-After header and a rate_limited error body.
 func TestIssueRateLimited(t *testing.T) {
 	dir := t.TempDir()
 	configs := `[{
@@ -188,7 +187,6 @@ func TestIssueRateLimited(t *testing.T) {
 
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 
-	// First 3 requests should succeed.
 	for i := 0; i < 3; i++ {
 		req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
 		body, _ := json.Marshal(req)
@@ -202,7 +200,6 @@ func TestIssueRateLimited(t *testing.T) {
 		}
 	}
 
-	// 4th should hit 429.
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
 	body, _ := json.Marshal(req)
 	resp, err := http.Post(ts.URL+"/v1/issue", "application/json", bytes.NewReader(body))
@@ -214,7 +211,6 @@ func TestIssueRateLimited(t *testing.T) {
 		t.Fatalf("req 4: status %d, want 429", resp.StatusCode)
 	}
 
-	// Retry-After header should be set and parse to a positive integer.
 	retryAfter := resp.Header.Get("Retry-After")
 	if retryAfter == "" {
 		t.Fatalf("missing Retry-After header on 429")
@@ -223,7 +219,6 @@ func TestIssueRateLimited(t *testing.T) {
 		t.Fatalf("Retry-After = %q, want positive integer", retryAfter)
 	}
 
-	// Response body has the rate_limited error code.
 	respBytes, _ := io.ReadAll(resp.Body)
 	var errResp IssueError
 	if err := json.Unmarshal(respBytes, &errResp); err != nil {
@@ -237,8 +232,10 @@ func TestIssueRateLimited(t *testing.T) {
 	}
 }
 
+// The issuance cap is per device key: one device hitting its limit does not
+// block another.
 func TestIssueRateLimitIsolatesDevices(t *testing.T) {
-	// alice exhausts her quota; bob's first request still succeeds.
+
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",
@@ -253,13 +250,12 @@ func TestIssueRateLimitIsolatesDevices(t *testing.T) {
 	alice, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	bob, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 
-	// alice maxes out.
 	for i := 0; i < 2; i++ {
 		req := buildSignedIssueRequest(t, alice, "AAAAAAAAAAAAAAAAAAAAAA")
 		body, _ := json.Marshal(req)
 		http.Post(ts.URL+"/v1/issue", "application/json", bytes.NewReader(body))
 	}
-	// alice's third is 429.
+
 	req := buildSignedIssueRequest(t, alice, "AAAAAAAAAAAAAAAAAAAAAA")
 	body, _ := json.Marshal(req)
 	resp, _ := http.Post(ts.URL+"/v1/issue", "application/json", bytes.NewReader(body))
@@ -268,7 +264,6 @@ func TestIssueRateLimitIsolatesDevices(t *testing.T) {
 		t.Fatalf("alice's 3rd should be 429, got %d", resp.StatusCode)
 	}
 
-	// bob's first request is allowed.
 	req2 := buildSignedIssueRequest(t, bob, "AAAAAAAAAAAAAAAAAAAAAA")
 	body2, _ := json.Marshal(req2)
 	resp2, _ := http.Post(ts.URL+"/v1/issue", "application/json", bytes.NewReader(body2))
@@ -278,8 +273,9 @@ func TestIssueRateLimitIsolatesDevices(t *testing.T) {
 	}
 }
 
+// A config with no attestation policy is not issuance-limited.
 func TestIssueRateLimitOffModeUnlimited(t *testing.T) {
-	// With mode=off, even MANY requests in a row should not be limited.
+
 	dir := t.TempDir()
 	configs := `[{
 		"configId": "AAAAAAAAAAAAAAAAAAAAAA",

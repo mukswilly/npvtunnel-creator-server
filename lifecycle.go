@@ -12,32 +12,21 @@ import (
 	"time"
 )
 
-// lifecycle.go is the read model behind the console's Server screen: it probes
-// the running deployment (systemd state, /healthz, listening ports, TLS cert)
-// and formats a snapshot. The probes are injectable interfaces so the screen
-// renders against fakes in tests — no live server, no root, no network.
-
-// ─── injectable probes ─────────────────────────────────────────────────
-
+// healthChecker, portChecker, and certInspector abstract the external probes a
+// status check makes, so the status rendering can be tested with fakes.
 type healthChecker interface {
-	// Healthz GETs url and reports whether it answered 200, plus how long it
-	// took (shown as a latency hint).
 	Healthz(url string) (ok bool, latency time.Duration)
 }
 
 type portChecker interface {
-	// Reachable reports whether a TCP connect to hostport succeeds (i.e. the
-	// port is bound and accepting).
 	Reachable(hostport string) bool
 }
 
 type certInspector interface {
-	// Expiry returns the leaf cert's NotAfter from an autocert DirCache.
-	// known=false during the ACME issuance window (no cert cached yet).
 	Expiry(acmeCacheDir, domain string) (expiry time.Time, known bool)
 }
 
-// httpHealthChecker is the real healthChecker.
+// httpHealthChecker probes a /healthz URL over HTTP.
 type httpHealthChecker struct{ timeout time.Duration }
 
 func (h httpHealthChecker) Healthz(url string) (bool, time.Duration) {
@@ -56,7 +45,7 @@ func (h httpHealthChecker) Healthz(url string) (bool, time.Duration) {
 	return resp.StatusCode == http.StatusOK, lat
 }
 
-// dialPortChecker is the real portChecker.
+// dialPortChecker reports whether a TCP port accepts connections.
 type dialPortChecker struct{ timeout time.Duration }
 
 func (d dialPortChecker) Reachable(hostport string) bool {
@@ -72,9 +61,8 @@ func (d dialPortChecker) Reachable(hostport string) bool {
 	return true
 }
 
-// autocertInspector reads the leaf cert from the binary's autocert DirCache
-// (<state-dir>/acme). The cache file is named exactly the domain and holds the
-// PEM bundle (key + chain, leaf first).
+// autocertInspector reads the cached Let's Encrypt certificate to find its
+// expiry. autocert stores the leaf under <cacheDir>/<domain>.
 type autocertInspector struct{}
 
 func (autocertInspector) Expiry(acmeCacheDir, domain string) (time.Time, bool) {
@@ -88,8 +76,7 @@ func (autocertInspector) Expiry(acmeCacheDir, domain string) (time.Time, bool) {
 	return leafNotAfter(data)
 }
 
-// leafNotAfter parses the first CERTIFICATE block in a PEM bundle and returns
-// its NotAfter. Pure (no I/O) so it's unit-testable with a fixture cert.
+// leafNotAfter returns the NotAfter of the first certificate in a PEM bundle.
 func leafNotAfter(pemBytes []byte) (time.Time, bool) {
 	for {
 		var block *pem.Block
@@ -108,12 +95,12 @@ func leafNotAfter(pemBytes []byte) (time.Time, bool) {
 	}
 }
 
-// ─── snapshot + collection ─────────────────────────────────────────────
-
-// LifecycleSnapshot is the fully-resolved state the Server screen renders.
+// LifecycleSnapshot is a point-in-time view of the deployment: service state,
+// reachability, TLS posture, and version, used by the status command and the
+// console's Server screen.
 type LifecycleSnapshot struct {
 	Mode          TLSMode
-	Configured    bool // a deployment is known (domain set)
+	Configured    bool
 	Svc           ServiceStatus
 	SvcErr        error
 	Health        bool
@@ -122,15 +109,14 @@ type LifecycleSnapshot struct {
 	PublicURL     string
 	CertExpiry    time.Time
 	CertKnown     bool
-	CheckPorts    bool // ports are only meaningful in built-in TLS mode
+	CheckPorts    bool
 	Port80        bool
 	Port443       bool
 	Version       string
 }
 
-// collectLifecycle runs every probe and assembles a snapshot. Built-in TLS is
-// the only mode where this box owns :80/:443 and the cert, so port + cert
-// probes are gated on it; proxy mode's external HTTPS is unverifiable from here.
+// collectLifecycle assembles a snapshot from the service controller and the
+// probes. Port and certificate checks run only for built-in TLS deployments.
 func collectLifecycle(svc serviceController, h healthChecker, p portChecker, c certInspector, o DeployOpts, acmeCacheDir string) LifecycleSnapshot {
 	snap := LifecycleSnapshot{
 		Mode:       o.Mode,
@@ -145,9 +131,6 @@ func collectLifecycle(svc serviceController, h healthChecker, p portChecker, c c
 		snap.Health, snap.HealthLatency = h.Healthz(snap.HealthURL)
 	}
 
-	// Port/cert probes only make sense once a built-in-TLS deployment exists
-	// (a domain is set). Skipping them when unconfigured avoids pointless
-	// localhost dials on the not-yet-set-up screen.
 	if o.Mode == TLSModeBuiltin && o.Domain != "" {
 		snap.CheckPorts = true
 		snap.Port80 = p.Reachable("127.0.0.1:80")
@@ -157,8 +140,8 @@ func collectLifecycle(svc serviceController, h healthChecker, p portChecker, c c
 	return snap
 }
 
-// healthURL is where /healthz is reachable for this deployment: the loopback
-// HTTP listener in proxy mode, the public HTTPS origin in built-in mode.
+// healthURL returns the /healthz URL to probe for the given deployment: the
+// local proxy address in reverse-proxy mode, otherwise the public URL.
 func healthURL(o DeployOpts) string {
 	switch o.Mode {
 	case TLSModeProxy:
@@ -175,11 +158,7 @@ func healthURL(o DeployOpts) string {
 	}
 }
 
-// ─── pure formatting ───────────────────────────────────────────────────
-
-// formatLifecycle renders the Server-screen status block. Pure (snapshot in,
-// string out) so it's table-tested directly; the screen wraps it in a
-// TextView. No color tags here — the screen adds those around the block.
+// formatLifecycle renders a snapshot as an aligned, human-readable status block.
 func formatLifecycle(snap LifecycleSnapshot, now time.Time) string {
 	var b strings.Builder
 
@@ -251,8 +230,7 @@ func checkMark(ok bool) string {
 	return "✗"
 }
 
-// humanizeDuration renders an uptime as "2d3h" / "2h14m" / "9m" (minute
-// resolution — uptimes don't need seconds).
+// humanizeDuration formats a duration as a compact d/h/m string.
 func humanizeDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0

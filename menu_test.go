@@ -10,10 +10,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
-// TestConsoleRendersMainMenu runs the console against a tcell simulation
-// screen and asserts the main menu actually drew — runtime render
-// verification, not just construction. The frame is captured inside the
-// draw callback (reading after Stop() would see a finalized/cleared screen).
+// The main menu renders its title, entries, and footer hints when drawn headlessly.
 func TestConsoleRendersMainMenu(t *testing.T) {
 	c, err := newConsole(t.TempDir())
 	if err != nil {
@@ -26,6 +23,8 @@ func TestConsoleRendersMainMenu(t *testing.T) {
 	sim.SetSize(120, 40)
 	c.app.SetScreen(sim)
 
+	// Snapshot the flattened cell grid on each draw; the mutex guards the
+	// handoff from the draw goroutine to the test goroutine.
 	var mu sync.Mutex
 	var content string
 	c.app.SetAfterDrawFunc(func(screen tcell.Screen) {
@@ -45,9 +44,10 @@ func TestConsoleRendersMainMenu(t *testing.T) {
 		mu.Unlock()
 	})
 
+	// Run the app, force one draw, give it time to paint, then stop.
 	runErr := make(chan error, 1)
 	go func() { runErr <- c.app.Run() }()
-	c.app.QueueUpdateDraw(func() {}) // force a draw under the simulation screen
+	c.app.QueueUpdateDraw(func() {})
 	time.Sleep(300 * time.Millisecond)
 	c.app.Stop()
 	if err := <-runErr; err != nil {
@@ -67,13 +67,11 @@ func TestConsoleRendersMainMenu(t *testing.T) {
 	}
 }
 
-// renderConsoleScreen drives a console against a tcell simulation screen,
-// optionally navigating to a screen first, and returns the rendered text. Used
-// by the per-screen render tests so they don't each re-implement the harness.
+// renderConsoleScreen optionally navigates the console, draws it onto a headless
+// simulation screen, and returns the flattened text of the painted cells.
 func renderConsoleScreen(t *testing.T, c *console, navigate func()) string {
 	t.Helper()
-	// Switch to the target screen synchronously — page switches are just model
-	// mutations, so doing it before Run avoids racing the initial draw.
+
 	if navigate != nil {
 		navigate()
 	}
@@ -84,6 +82,8 @@ func renderConsoleScreen(t *testing.T, c *console, navigate func()) string {
 	sim.SetSize(120, 40)
 	c.app.SetScreen(sim)
 
+	// Snapshot the flattened cell grid on each draw; the mutex guards the
+	// handoff from the draw goroutine to the test goroutine.
 	var mu sync.Mutex
 	var content string
 	c.app.SetAfterDrawFunc(func(screen tcell.Screen) {
@@ -103,9 +103,10 @@ func renderConsoleScreen(t *testing.T, c *console, navigate func()) string {
 		mu.Unlock()
 	})
 
+	// Run the app, force one draw, give it time to paint, then stop.
 	runErr := make(chan error, 1)
 	go func() { runErr <- c.app.Run() }()
-	c.app.QueueUpdateDraw(func() {}) // force a draw of the current front page
+	c.app.QueueUpdateDraw(func() {})
 	time.Sleep(300 * time.Millisecond)
 	c.app.Stop()
 	if err := <-runErr; err != nil {
@@ -116,8 +117,7 @@ func renderConsoleScreen(t *testing.T, c *console, navigate func()) string {
 	return content
 }
 
-// TestConsoleRendersServerScreen drives the new Server lifecycle screen with
-// injected fakes (no systemd, no network) and asserts it renders live state.
+// The server screen reflects injected status, domain, and key/action labels.
 func TestConsoleRendersServerScreen(t *testing.T) {
 	c, err := newConsole(t.TempDir())
 	if err != nil {
@@ -133,7 +133,7 @@ func TestConsoleRendersServerScreen(t *testing.T) {
 	got := renderConsoleScreen(t, c, c.showServer)
 	for _, want := range []string{
 		"Server", "active", "issuer.alpha.example", "public key", "pubkey",
-		"Restart", "View logs", // privileged action buttons (canManage=true, running)
+		"Restart", "View logs",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("server screen missing %q\n---\n%s", want, got)
@@ -141,20 +141,25 @@ func TestConsoleRendersServerScreen(t *testing.T) {
 	}
 }
 
+// serviceVerbCommand invokes the binary directly when root and wraps it in sudo
+// otherwise, appending any extra arguments after the verb.
 func TestServiceVerbCommand(t *testing.T) {
-	// Root: invoke the binary directly.
+
+	// uid 0: run the binary directly.
 	name, args := serviceVerbCommand(0, "/usr/local/bin/creator-server", "restart", nil)
 	if name != "/usr/local/bin/creator-server" ||
 		!reflect.DeepEqual(args, []string{"service", "restart"}) {
 		t.Errorf("root: got %s %v", name, args)
 	}
-	// Non-root: go through sudo with the binary as the first arg.
+
+	// non-root uid: prefix with sudo.
 	name, args = serviceVerbCommand(1000, "/usr/local/bin/creator-server", "start", nil)
 	if name != "sudo" ||
 		!reflect.DeepEqual(args, []string{"/usr/local/bin/creator-server", "service", "start"}) {
 		t.Errorf("non-root: got %s %v", name, args)
 	}
-	// Extra args (e.g. install flags) are appended after the verb.
+
+	// extra args follow the verb.
 	_, args = serviceVerbCommand(0, "bin", "install", []string{"-tls", "builtin", "-domain", "h"})
 	if !reflect.DeepEqual(args, []string{"service", "install", "-tls", "builtin", "-domain", "h"}) {
 		t.Errorf("extra args: got %v", args)
