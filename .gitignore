@@ -1,0 +1,25 @@
+# Compiled binaries (native + cross-compiled for deployment)
+creator-server
+npvtunnel-creator-server
+*.exe
+creator-server.linux-amd64
+creator-server.linux-arm64
+creator-server.darwin-amd64
+creator-server.darwin-arm64
+
+# Local TLS dev certs
+*.pem
+*.key
+
+# Keep bundled attestation roots despite the PEM ignore rule.
+!attestation-roots/*.pem
+
+# goreleaser output
+/dist/
+
+# Local runtime state contains signing keys and audit data.
+*.bin
+/state/
+configs.json
+revoked.json
+redemption-tokens.json

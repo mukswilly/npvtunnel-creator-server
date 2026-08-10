@@ -1,0 +1,41 @@
+# Release workflow for npvtunnel-creator-server.
+#
+# Trigger: push a semver tag (e.g. v0.1.0). Produces signed static linux
+# amd64/arm64 binaries. No manual secrets required — cosign signs keylessly
+# over OIDC and the release is created with the built-in GITHUB_TOKEN.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # create the GitHub release
+  id-token: write   # cosign keyless signing (OIDC)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Release binaries (goreleaser)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
