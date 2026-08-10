@@ -313,7 +313,7 @@ func loadOrCreateAuditSalt(path string) ([]byte, error) {
 		if _, err := rand.Read(salt); err != nil {
 			return nil, fmt.Errorf("generate audit salt: %w", err)
 		}
-		if err := os.WriteFile(path, salt, 0o600); err != nil {
+		if err := atomicWriteFile(path, salt, 0o600); err != nil {
 			return nil, fmt.Errorf("write %s: %w", path, err)
 		}
 		return salt, nil
@@ -344,7 +344,7 @@ func loadOrCreateCreatorKey(path string) (*ecdsa.PrivateKey, bool, error) {
 			return nil, false, fmt.Errorf("marshal key: %w", err)
 		}
 		blob := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-		if err := os.WriteFile(path, blob, 0o600); err != nil {
+		if err := atomicWriteFile(path, blob, 0o600); err != nil {
 			return nil, false, fmt.Errorf("write %s: %w", path, err)
 		}
 		return priv, true, nil
@@ -551,8 +551,9 @@ func loadRedemptionTokensFile(path string) (map[string]*RedemptionToken, error) 
 }
 
 // persistRedemptionTokens writes the token map to path as a sorted JSON array.
-// It writes to a sibling ".tmp" file and renames it into place so readers never
-// observe a partially written file. Tokens are sorted for stable output.
+// It atomically replaces the file without changing its owner, group or mode, so
+// readers never observe partial data and the API service retains access. Tokens
+// are sorted for stable output.
 func persistRedemptionTokens(path string, tokens map[string]*RedemptionToken) error {
 
 	list := make([]RedemptionToken, 0, len(tokens))
@@ -566,13 +567,8 @@ func persistRedemptionTokens(path string, tokens map[string]*RedemptionToken) er
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	// Atomic replace: write to a temp file, then rename over the target.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename: %w", err)
+	if err := atomicWriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("persist tokens: %w", err)
 	}
 	return nil
 }
