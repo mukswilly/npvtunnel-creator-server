@@ -97,7 +97,7 @@ func loadConsoleSettings(stateDir string) consoleSettings {
 // permissions; write failures are ignored as preferences are non-critical.
 func (c *console) saveSettings() {
 	if data, err := json.MarshalIndent(c.settings, "", "  "); err == nil {
-		_ = os.WriteFile(filepath.Join(c.stateDir, "console.json"), data, 0o600)
+		_ = atomicWriteFile(filepath.Join(c.stateDir, "console.json"), data, 0o600)
 	}
 }
 
