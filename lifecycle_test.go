@@ -79,6 +79,9 @@ func TestCollectLifecycleProxy(t *testing.T) {
 	if snap.HealthURL != "http://127.0.0.1:8443/healthz" {
 		t.Errorf("HealthURL = %q", snap.HealthURL)
 	}
+	if !snap.PublicHealth || snap.PublicHealthURL != "https://issuer.x.example/healthz" {
+		t.Errorf("public edge diagnostic = %v %q", snap.PublicHealth, snap.PublicHealthURL)
+	}
 }
 
 // formatLifecycle renders a snapshot into the status report across running, failed, not-installed,
@@ -120,13 +123,20 @@ func TestFormatLifecycle(t *testing.T) {
 	})
 
 	t.Run("proxy hides ports + cert", func(t *testing.T) {
-		snap := LifecycleSnapshot{Mode: TLSModeProxy, PublicURL: "https://h", Health: true}
+		snap := LifecycleSnapshot{
+			Mode: TLSModeProxy, PublicURL: "https://h", Health: true,
+			HealthURL:    "http://127.0.0.1:8443/healthz",
+			PublicHealth: true, PublicHealthURL: "https://h/healthz",
+		}
 		got := formatLifecycle(snap, now)
 		if !strings.Contains(got, "reverse proxy") {
 			t.Errorf("want reverse-proxy cert note:\n%s", got)
 		}
 		if strings.Contains(got, ":80") {
 			t.Error("proxy mode must not render ports")
+		}
+		if !strings.Contains(got, "Origin") || !strings.Contains(got, "Public     ok") {
+			t.Errorf("proxy diagnostics missing origin/public split:\n%s", got)
 		}
 	})
 

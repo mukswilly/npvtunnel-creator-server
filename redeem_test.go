@@ -102,6 +102,21 @@ func TestRedeemRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRedemptionMintInputCarriesAliasOrConfigName(t *testing.T) {
+	state := NewState()
+	state.PublicIssuerURL = "https://issuer.example/v1/issue"
+	entry := &ConfigEntry{Config: json.RawMessage(`{"name":"Config name"}`)}
+	in := redemptionMintInput(state, entry, []byte{1}, []byte{2})
+	if in.DisplayName != "Config name" {
+		t.Fatalf("displayName = %q, want config name", in.DisplayName)
+	}
+	entry.DisplayName = "Creator alias"
+	in = redemptionMintInput(state, entry, []byte{1}, []byte{2})
+	if in.DisplayName != "Creator alias" {
+		t.Fatalf("displayName = %q, want creator alias", in.DisplayName)
+	}
+}
+
 func TestRedeemMultipleConfigsReturnsBundle(t *testing.T) {
 	dir := t.TempDir()
 	const secondCID = "EBAQEBAQEBAQEBAQEBAQEA"

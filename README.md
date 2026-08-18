@@ -42,6 +42,12 @@ renews a Let's Encrypt certificate on ports 80 and 443. Reverse-proxy mode binds
 the API to loopback on a selectable origin port so Caddy, nginx, or a CDN can
 provide public HTTPS.
 
+Cloudflare orange-cloud DNS cannot reach the loopback listener by itself. Use a
+local HTTPS reverse proxy or Cloudflare Tunnel as described in
+[the Cloudflare deployment guide](docs/cloudflare.md). The Server screen checks
+the loopback origin and public edge separately so origin-only success is not
+mistaken for a working recipient path.
+
 <p align="center">
   <a href="docs/images/setup.png"><img src="docs/images/setup.png" alt="Guided domain and HTTPS setup" width="920"></a>
 </p>

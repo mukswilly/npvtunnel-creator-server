@@ -29,6 +29,11 @@ type ConfigEntry struct {
 	// so it round-trips unchanged.
 	Config json.RawMessage `json:"config"`
 
+	// DisplayName is an optional creator-selected alias. When empty, recipient
+	// envelopes and the dashboard use the name embedded in Config. Keeping the
+	// alias separate lets config replacements preserve an intentional public name.
+	DisplayName string `json:"displayName,omitempty"`
+
 	// AttestationPolicy, when set, constrains issuance with attestation checks.
 	AttestationPolicy *AttestationPolicy `json:"attestationPolicy,omitempty"`
 

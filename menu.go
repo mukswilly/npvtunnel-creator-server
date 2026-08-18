@@ -352,7 +352,7 @@ func (c *console) showConfigs() {
 	for r, e := range list {
 		s := summarizeConfig(e.Config)
 		table.SetCell(r+1, 0, tview.NewTableCell(shortBase64(e.ConfigID)+"  "))
-		table.SetCell(r+1, 1, tview.NewTableCell(orDash(s.Name)+"  "))
+		table.SetCell(r+1, 1, tview.NewTableCell(orDash(effectiveDisplayName(e))+"  "))
 		table.SetCell(r+1, 2, tview.NewTableCell(orDash(s.Type)+"  "))
 		table.SetCell(r+1, 3, tview.NewTableCell(orDash(s.Address)))
 	}
@@ -398,7 +398,7 @@ func (c *console) showMint(prefillID string) {
 	form := tview.NewForm()
 	for i, entry := range configs {
 		idx := i
-		label := shortBase64(entry.ConfigID) + "  " + orDash(summarizeConfig(entry.Config).Name)
+		label := shortBase64(entry.ConfigID) + "  " + orDash(effectiveDisplayName(entry))
 		form.AddCheckbox(label, selected[i], func(checked bool) { selected[idx] = checked })
 	}
 	form.AddInputField("Redemption URL", redemptionURL, 0, nil, func(t string) { redemptionURL = t })

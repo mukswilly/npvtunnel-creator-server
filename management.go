@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // stdinIsTTY reports whether standard input is a terminal. The server uses it
@@ -51,6 +52,34 @@ func summarizeConfig(raw json.RawMessage) configSummary {
 	var summary configSummary
 	_ = json.Unmarshal(raw, &summary)
 	return summary
+}
+
+const maxDisplayNameRunes = 80
+
+// normalizeDisplayName makes creator-visible aliases safe for terminal and app
+// display while retaining ordinary Unicode names. An empty result means "use
+// the name embedded in the registered config".
+func normalizeDisplayName(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(value))
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) > maxDisplayNameRunes {
+		runes = runes[:maxDisplayNameRunes]
+	}
+	return string(runes)
+}
+
+// effectiveDisplayName returns an explicit creator alias when present and the
+// config's own name otherwise.
+func effectiveDisplayName(entry ConfigEntry) string {
+	if alias := normalizeDisplayName(entry.DisplayName); alias != "" {
+		return alias
+	}
+	return normalizeDisplayName(summarizeConfig(entry.Config).Name)
 }
 
 const configRegistrationKind = "npv-config-registration"

@@ -176,6 +176,7 @@ func TestMintEnvelopeRoundTrip(t *testing.T) {
 		CreatorKey:       creatorPriv,
 		RecipientPubKeys: [][]byte{recipientPubCompressed},
 		IssuerURL:        "https://issuer.test/v1/issue",
+		DisplayName:      "Alpha  Server",
 		IssuedAt:         time.Date(2026, 5, 27, 18, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
@@ -248,6 +249,9 @@ func TestMintEnvelopeRoundTrip(t *testing.T) {
 	if b.IssuerURL != "https://issuer.test/v1/issue" {
 		t.Errorf("body.issuerUrl = %q", b.IssuerURL)
 	}
+	if b.DisplayName != "Alpha  Server" {
+		t.Errorf("body.displayName = %q", b.DisplayName)
+	}
 
 	if b.CreatorPubkey != dec.Header.Creator.Pk {
 		t.Errorf("body.creatorPubkey != header.creator.pk")
@@ -256,6 +260,18 @@ func TestMintEnvelopeRoundTrip(t *testing.T) {
 	expectedConfigFp := sha256.Sum256(out.EnvelopeBytes)
 	if out.ConfigFp != b64url.EncodeToString(expectedConfigFp[:]) {
 		t.Errorf("configFp mismatch")
+	}
+}
+
+func TestIssuerBodyOmitsEmptyDisplayNameForLegacyClients(t *testing.T) {
+	body, err := encodeIssuerBody(issuerBody{
+		Kind: issuerBodyKindV2, CreatorPubkey: "AAAA", IssuerURL: "https://issuer.test/v1/issue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte("displayName")) {
+		t.Fatalf("empty optional displayName was encoded: %s", body)
 	}
 }
 

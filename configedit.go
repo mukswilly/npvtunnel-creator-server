@@ -19,10 +19,63 @@ func (c *console) showConfigActions(id string) {
 	list.SetSecondaryTextColor(tcell.ColorGray)
 	list.AddItem("Share link", "npvtunnel://join to post in a channel (one or many people)", '1', func() { c.showMint(id) })
 	list.AddItem("File for one device", "Make a .npvs file for someone whose device key you have", '2', func() { c.showDirectMint(id) })
-	list.AddItem("Replace config", "Swap in a new export; existing links keep working", '3', func() { c.showReplaceConfig(id) })
-	list.AddItem("Remove config", "Stop handing it out (everyone on it loses access)", '4', func() { c.confirmRemoveConfig(id) })
+	list.AddItem("Set display name", "Choose the name recipients see; blank uses the config name", '3', func() { c.showDisplayName(id) })
+	list.AddItem("Replace config", "Swap in a new export; existing links keep working", '4', func() { c.showReplaceConfig(id) })
+	list.AddItem("Remove config", "Stop handing it out (everyone on it loses access)", '5', func() { c.confirmRemoveConfig(id) })
 	list.AddItem("Back", "Return to the configs list", 'b', c.showConfigs)
 	c.switchTo("configactions", "Config "+shortBase64(id), footerKeys("[yellow::b]Enter[-:-:-]=Select"), list)
+}
+
+// showDisplayName lets a creator set or clear the alias carried by newly
+// minted issuer envelopes. Clearing it restores the name embedded in the config.
+func (c *console) showDisplayName(id string) {
+	path := filepath.Join(c.stateDir, "configs.json")
+	entries, err := readConfigEntries(path)
+	if err != nil {
+		c.flash("Couldn't read configs.json:\n\n" + err.Error())
+		return
+	}
+	current := ""
+	found := false
+	for _, entry := range entries {
+		if entry.ConfigID == id {
+			current = entry.DisplayName
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.flash("Config not found in configs.json.")
+		return
+	}
+	value := current
+	form := tview.NewForm()
+	form.AddInputField("Display name", current, maxDisplayNameRunes, nil, func(t string) { value = t })
+	form.AddButton("Save", func() {
+		if err := c.setConfigDisplayName(id, value); err != nil {
+			c.flash("Couldn't save the display name:\n\n" + err.Error())
+			return
+		}
+		c.flashThen("Display name saved. New handouts and share-link redemptions use it.", func() { c.showConfigActions(id) })
+	})
+	form.AddButton("Cancel", func() { c.showConfigActions(id) })
+	form.SetBorder(true).SetTitle(" Set display name ")
+	c.switchTo("displayname", "Set display name", footerKeys(""), form)
+}
+
+func (c *console) setConfigDisplayName(id, value string) error {
+	path := filepath.Join(c.stateDir, "configs.json")
+	entries, err := readConfigEntries(path)
+	if err != nil {
+		return err
+	}
+	for i := range entries {
+		if entries[i].ConfigID == id {
+			entries[i].DisplayName = normalizeDisplayName(value)
+			return writeConfigEntries(path, entries)
+		}
+	}
+	return fmt.Errorf("config %s not found in configs.json", shortBase64(id))
 }
 
 // showReplaceConfig swaps a config's body in place, keeping the same configId so
@@ -94,7 +147,7 @@ func (c *console) showDirectMint(prefillID string) {
 	options := make([]string, len(configs))
 	initial := 0
 	for i, e := range configs {
-		options[i] = shortBase64(e.ConfigID) + "  " + orDash(summarizeConfig(e.Config).Name)
+		options[i] = shortBase64(e.ConfigID) + "  " + orDash(effectiveDisplayName(e))
 		if e.ConfigID == prefillID {
 			initial = i
 		}
@@ -156,11 +209,28 @@ func (c *console) mintDirect(configID, issuerURL, pubkeyB64 string) (path, b64 s
 	if derr != nil || len(cidBytes) != envelopeConfigIDLen {
 		return "", "", fmt.Errorf("configId %q is not a valid 16-byte routing key", configID)
 	}
+	entries, derr := readConfigEntries(filepath.Join(c.stateDir, "configs.json"))
+	if derr != nil {
+		return "", "", derr
+	}
+	displayName := ""
+	found := false
+	for _, entry := range entries {
+		if entry.ConfigID == configID {
+			displayName = effectiveDisplayName(entry)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", "", fmt.Errorf("config %s not found in configs.json", shortBase64(configID))
+	}
 
 	res, merr := mintIssuerEnvelope(mintInput{
 		CreatorKey:       c.state.CreatorSigningKey,
 		RecipientPubKeys: [][]byte{raw},
 		IssuerURL:        issuerURL,
+		DisplayName:      displayName,
 		ConfigID:         cidBytes,
 	})
 	if merr != nil {

@@ -99,20 +99,23 @@ func leafNotAfter(pemBytes []byte) (time.Time, bool) {
 // reachability, TLS posture, and version, used by the status command and the
 // console's Server screen.
 type LifecycleSnapshot struct {
-	Mode          TLSMode
-	Configured    bool
-	Svc           ServiceStatus
-	SvcErr        error
-	Health        bool
-	HealthURL     string
-	HealthLatency time.Duration
-	PublicURL     string
-	CertExpiry    time.Time
-	CertKnown     bool
-	CheckPorts    bool
-	Port80        bool
-	Port443       bool
-	Version       string
+	Mode                TLSMode
+	Configured          bool
+	Svc                 ServiceStatus
+	SvcErr              error
+	Health              bool
+	HealthURL           string
+	HealthLatency       time.Duration
+	PublicHealth        bool
+	PublicHealthURL     string
+	PublicHealthLatency time.Duration
+	PublicURL           string
+	CertExpiry          time.Time
+	CertKnown           bool
+	CheckPorts          bool
+	Port80              bool
+	Port443             bool
+	Version             string
 }
 
 // collectLifecycle assembles a snapshot from the service controller and the
@@ -129,6 +132,10 @@ func collectLifecycle(svc serviceController, h healthChecker, p portChecker, c c
 	snap.HealthURL = healthURL(o)
 	if snap.HealthURL != "" {
 		snap.Health, snap.HealthLatency = h.Healthz(snap.HealthURL)
+	}
+	if o.Mode == TLSModeProxy && o.Domain != "" {
+		snap.PublicHealthURL = o.PublicURL() + "/healthz"
+		snap.PublicHealth, snap.PublicHealthLatency = h.Healthz(snap.PublicHealthURL)
 	}
 
 	if o.Mode == TLSModeBuiltin && o.Domain != "" {
@@ -186,9 +193,20 @@ func formatLifecycle(snap LifecycleSnapshot, now time.Time) string {
 		health = "ok"
 	}
 	if snap.HealthURL != "" {
-		fmt.Fprintf(&b, "  Health     %s   %s\n", health, snap.HealthURL)
+		label := "Health"
+		if snap.Mode == TLSModeProxy {
+			label = "Origin"
+		}
+		fmt.Fprintf(&b, "  %-10s %s   %s\n", label, health, snap.HealthURL)
 	} else {
 		fmt.Fprintf(&b, "  Health     %s\n", health)
+	}
+	if snap.PublicHealthURL != "" {
+		publicHealth := "unreachable"
+		if snap.PublicHealth {
+			publicHealth = "ok"
+		}
+		fmt.Fprintf(&b, "  Public     %s   %s\n", publicHealth, snap.PublicHealthURL)
 	}
 
 	if snap.PublicURL != "" {
