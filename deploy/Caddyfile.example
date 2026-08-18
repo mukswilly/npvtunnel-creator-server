@@ -1,0 +1,4 @@
+# Replace the hostname and origin port with the values shown by npv-creator.
+issuer.example.com {
+	reverse_proxy 127.0.0.1:8443
+}

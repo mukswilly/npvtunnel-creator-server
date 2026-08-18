@@ -72,7 +72,7 @@ func (c *console) showSetupWizard() {
 	form := tview.NewForm()
 	form.AddInputField("Public hostname", domain, 40, nil, func(t string) { domain = t })
 	form.AddDropDown("HTTPS",
-		[]string{"This binary, via Let's Encrypt", "A reverse proxy I run"},
+		[]string{"This binary, via Let's Encrypt", "Local reverse proxy or Cloudflare Tunnel"},
 		int(mode), func(_ string, idx int) { mode = TLSMode(idx) })
 	form.AddDropDown("Reverse-proxy origin port", proxyPorts, proxyPortIndex, func(value string, _ int) {
 		proxyPort = value
@@ -88,8 +88,9 @@ func (c *console) showSetupWizard() {
 		"\n  The hostname is what recipients' apps reach — point its DNS A record\n" +
 			"  at this server.\n\n" +
 			"  • Standard HTTPS: built-in Let's Encrypt on public ports 80+443.\n" +
-			"  • CDN/reverse proxy: choose a loopback origin port for Caddy, nginx,\n" +
-			"    or Cloudflare. The public URL still uses normal HTTPS on 443.")
+			"  • Proxy/Tunnel: the API stays on loopback. Caddy, nginx, or\n" +
+				"    cloudflared must forward public HTTPS to the selected origin port.\n" +
+				"    See the Cloudflare deployment guide before enabling orange-cloud DNS.")
 	help.SetTextColor(tcell.ColorGray)
 
 	body := tview.NewFlex().SetDirection(tview.FlexRow).

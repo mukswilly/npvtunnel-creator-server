@@ -135,13 +135,7 @@ func (s *Server) handleRedeem(w http.ResponseWriter, r *http.Request) {
 				"token has malformed configId")
 			return
 		}
-		mintRes, mintErr := mintIssuerEnvelope(mintInput{
-			CreatorKey:       s.state.CreatorSigningKey,
-			RecipientPubKeys: [][]byte{recipientPub},
-			IssuerURL:        s.state.PublicIssuerURL,
-			ConfigID:         configID,
-			Policy:           cfgEntry.IssuedPolicy,
-		})
+		mintRes, mintErr := mintIssuerEnvelope(redemptionMintInput(s.state, cfgEntry, recipientPub, configID))
 		if mintErr != nil {
 			writeRedeemError(w, http.StatusBadRequest, "bad_pubkey", "mint failed: "+mintErr.Error())
 			return
@@ -187,6 +181,17 @@ func (s *Server) handleRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	writeJSON(w, http.StatusOK, redeemBundle{V: 1, Envelopes: encoded})
+}
+
+func redemptionMintInput(state *State, entry *ConfigEntry, recipientPub, configID []byte) mintInput {
+	return mintInput{
+		CreatorKey:       state.CreatorSigningKey,
+		RecipientPubKeys: [][]byte{recipientPub},
+		IssuerURL:        state.PublicIssuerURL,
+		DisplayName:      effectiveDisplayName(*entry),
+		ConfigID:         configID,
+		Policy:           entry.IssuedPolicy,
+	}
 }
 
 // redeemReasonDetail maps a machine reason code to a recipient-facing message.

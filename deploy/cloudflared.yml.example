@@ -1,0 +1,9 @@
+# Copy to cloudflared's protected configuration directory and replace all
+# placeholders. Create the DNS route in Cloudflare before starting the service.
+tunnel: 00000000-0000-0000-0000-000000000000
+credentials-file: /etc/cloudflared/00000000-0000-0000-0000-000000000000.json
+
+ingress:
+  - hostname: issuer.example.com
+    service: http://127.0.0.1:8443
+  - service: http_status:404

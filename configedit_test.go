@@ -17,6 +17,9 @@ func TestConsoleConfigReplaceRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("appendConfig: %v", err)
 	}
+	if err := c.setConfigDisplayName(id, "  My \n Alias   "); err != nil {
+		t.Fatalf("set display name: %v", err)
+	}
 
 	// Replacing the body keeps the same configId; only the stored config changes.
 	newBody := json.RawMessage(`{"name":"b","type":"SSH","sshConfig":{"sshHost":"h"}}`)
@@ -28,6 +31,9 @@ func TestConsoleConfigReplaceRemove(t *testing.T) {
 	if len(list) != 1 || list[0].ConfigID != id {
 		t.Fatalf("expected 1 config with same id, got %+v", list)
 	}
+	if list[0].DisplayName != "My  Alias" || effectiveDisplayName(list[0]) != "My  Alias" {
+		t.Errorf("display alias was not normalized and preserved: %+v", list[0])
+	}
 	var m map[string]any
 	json.Unmarshal(list[0].Config, &m)
 	if m["name"] != "b" || m["type"] != "SSH" {
@@ -35,6 +41,13 @@ func TestConsoleConfigReplaceRemove(t *testing.T) {
 	}
 	if list[0].IssuedPolicy == nil || !list[0].IssuedPolicy.OnlyMobileNetwork {
 		t.Errorf("replace didn't apply the imported policy: %+v", list[0].IssuedPolicy)
+	}
+	if err := c.setConfigDisplayName(id, ""); err != nil {
+		t.Fatalf("clear display name: %v", err)
+	}
+	list, _ = readConfigEntries(filepath.Join(c.stateDir, "configs.json"))
+	if list[0].DisplayName != "" || effectiveDisplayName(list[0]) != "b" {
+		t.Errorf("cleared alias should fall back to replacement config name: %+v", list[0])
 	}
 
 	if err := c.removeConfig(id); err != nil {

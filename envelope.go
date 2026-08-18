@@ -95,6 +95,7 @@ type issuerBody struct {
 	Kind          string `json:"kind"`
 	CreatorPubkey string `json:"creatorPubkey"`
 	IssuerURL     string `json:"issuerUrl"`
+	DisplayName   string `json:"displayName,omitempty"`
 }
 
 const issuerBodyKindV2 = "v2-issuer"
@@ -111,6 +112,8 @@ type mintInput struct {
 	RecipientPubKeys [][]byte
 
 	IssuerURL string
+
+	DisplayName string
 
 	ConfigID []byte
 
@@ -229,6 +232,7 @@ func mintIssuerEnvelope(in mintInput) (*mintResult, error) {
 		Kind:          issuerBodyKindV2,
 		CreatorPubkey: b64url.EncodeToString(creatorPub),
 		IssuerURL:     in.IssuerURL,
+		DisplayName:   normalizeDisplayName(in.DisplayName),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode issuer body: %w", err)
