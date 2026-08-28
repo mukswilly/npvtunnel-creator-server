@@ -50,7 +50,17 @@ func verifyP1363Signature(pub *ecdsa.PublicKey, msg, signatureRaw []byte) bool {
 // over. The pipe-delimited layout is fixed by the protocol; changing any field,
 // order, or separator invalidates every client signature.
 func issueRequestSigningInput(req *IssueRequest) []byte {
+	if req.V >= 2 {
+		return []byte("v2.issue|" + req.DevicePk + "|" + req.Attestation.Platform + "|" +
+			req.Attestation.Token + "|" + req.Attestation.Nonce + "|" +
+			req.Attestation.BoundDevicePk + "|" + req.Attestation.Proof + "|" +
+			req.ConfigID + "|" + req.RequestNonce)
+	}
 	return []byte("v1.issue|" + req.DevicePk + "|" + req.Attestation.Token + "|" + req.ConfigID + "|" + req.RequestNonce)
+}
+
+func attestationBindingInput(blob AttestationBlob) []byte {
+	return []byte("v2.attest|" + blob.Nonce + "|" + blob.BoundDevicePk)
 }
 
 // verifyIssueRequestSignature checks that RequestSignature was produced by the

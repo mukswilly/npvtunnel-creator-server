@@ -32,6 +32,11 @@ type Verdict struct {
 	// DeviceLocked reports whether the device bootloader is locked.
 	DeviceLocked bool
 
+	// Android package identities and signing-certificate digests attested for
+	// the UID allowed to use this key.
+	AppPackageNames         []string
+	AppSigningCertSHA256Hex []string
+
 	// Reason explains the verdict, primarily when verification fails.
 	Reason string
 }

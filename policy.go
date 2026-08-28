@@ -2,8 +2,12 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
+
+const defaultAndroidPackageName = "com.napsternetlabs.napsternetv"
+const defaultAndroidSigningCertSHA256 = "e03dcc51aad45456b97b6331c08a2f6a67eb9516e931a3e6cefcd0eeee5801d4"
 
 // attestationDecision is the outcome of applying a policy to a request: whether
 // to reject it, how long the issued config may live, and what to record.
@@ -116,6 +120,20 @@ func evaluateAttestationPolicy(
 
 			attested = false
 		}
+		if arm.Verifier == "android-key-attestation" {
+			expectedPackage := arm.AndroidPackageName
+			if expectedPackage == "" {
+				expectedPackage = defaultAndroidPackageName
+			}
+			expectedDigest := arm.AndroidSigningCertSHA256
+			if expectedDigest == "" {
+				expectedDigest = defaultAndroidSigningCertSHA256
+			}
+			if !containsString(verdict.AppPackageNames, expectedPackage) ||
+				!containsFold(verdict.AppSigningCertSHA256Hex, expectedDigest) {
+				attested = false
+			}
+		}
 	case hasArm:
 		attested = claimsAttestation(attestation)
 	}
@@ -170,6 +188,20 @@ func evaluateAttestationPolicy(
 					verdict.VerifiedBootState, verdict.DeviceLocked,
 				)
 			}
+			if arm.Verifier == "android-key-attestation" {
+				expectedPackage := arm.AndroidPackageName
+				if expectedPackage == "" {
+					expectedPackage = defaultAndroidPackageName
+				}
+				expectedDigest := arm.AndroidSigningCertSHA256
+				if expectedDigest == "" {
+					expectedDigest = defaultAndroidSigningCertSHA256
+				}
+				if !containsString(verdict.AppPackageNames, expectedPackage) ||
+					!containsFold(verdict.AppSigningCertSHA256Hex, expectedDigest) {
+					reason = "attestation application identity does not match the allowed Android app"
+				}
+			}
 		}
 		return attestationDecision{
 			reject:       true,
@@ -181,6 +213,24 @@ func evaluateAttestationPolicy(
 
 	// Unrecognized mode: allow at full TTL.
 	return attestationDecision{ttl: baseTtl}, nil
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func containsFold(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, expected) {
+			return true
+		}
+	}
+	return false
 }
 
 // claimsAttestation reports whether a blob purports to carry an attestation,
@@ -234,10 +284,12 @@ func resolveIssuanceLimit(policy *AttestationPolicy) int {
 func strictDeviceAttestationPolicy(iosAppID string) *AttestationPolicy {
 	arms := map[string]*AttestationArm{
 		"ANDROID": {
-			Verifier:              "android-key-attestation",
-			RequireHardwareBacked: true,
-			RequireTrustedRoot:    true,
-			RequireVerifiedBoot:   true,
+			Verifier:                 "android-key-attestation",
+			RequireHardwareBacked:    true,
+			RequireTrustedRoot:       true,
+			RequireVerifiedBoot:      true,
+			AndroidPackageName:       defaultAndroidPackageName,
+			AndroidSigningCertSHA256: defaultAndroidSigningCertSHA256,
 		},
 	}
 	if iosAppID != "" {
