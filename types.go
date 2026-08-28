@@ -7,9 +7,16 @@ package main
 // issue request. It is always present in the request (even when empty) because
 // Token is folded into the request signature; see verifyIssueRequestSignature.
 type AttestationBlob struct {
-	Platform string `json:"platform"`
-	Token    string `json:"token"`
-	Nonce    string `json:"nonce"`
+	Platform      string `json:"platform"`
+	Token         string `json:"token"`
+	Nonce         string `json:"nonce"`
+	BoundDevicePk string `json:"boundDevicePk,omitempty"`
+	Proof         string `json:"proof,omitempty"`
+}
+
+type AttestationChallenge struct {
+	Challenge string `json:"challenge"`
+	ExpiresAt string `json:"expiresAt"`
 }
 
 // IssueRequest is the body of POST /v1/issue: a device asking this issuer to

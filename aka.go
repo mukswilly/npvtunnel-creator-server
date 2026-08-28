@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -109,19 +112,24 @@ func (v *androidKeyAttestationVerifier) Verify(blob AttestationBlob) (Verdict, e
 	_, verifyErr := leaf.Verify(verifyOpts)
 	trustedRoot := verifyErr == nil
 
-	// Locate the attestation extension on the leaf certificate by its OID.
+	// Locate the trusted occurrence nearest the root. Do not blindly trust an
+	// attacker-appended leaf extension.
 	var extBytes []byte
-	for _, ext := range leaf.Extensions {
-		if ext.Id.Equal(androidKeyAttestationOID) {
-			extBytes = ext.Value
-			break
+	var attestationCert *x509.Certificate
+	for i := len(chain) - 1; i >= 0 && attestationCert == nil; i-- {
+		for _, ext := range chain[i].Extensions {
+			if ext.Id.Equal(androidKeyAttestationOID) {
+				extBytes = ext.Value
+				attestationCert = chain[i]
+				break
+			}
 		}
 	}
 	if extBytes == nil {
 		return Verdict{
 			Verified:    false,
 			TrustedRoot: trustedRoot,
-			Reason:      "leaf cert missing Android Key Attestation extension",
+			Reason:      "certificate chain missing Android Key Attestation extension",
 		}, nil
 	}
 
@@ -129,14 +137,29 @@ func (v *androidKeyAttestationVerifier) Verify(blob AttestationBlob) (Verdict, e
 	if err != nil {
 		return Verdict{}, fmt.Errorf("parse attestation extension: %w", err)
 	}
+	if blob.Nonce != "" {
+		challenge, err := b64url.DecodeString(blob.Nonce)
+		if err != nil || !bytes.Equal(challenge, parsed.challenge) {
+			return Verdict{Verified: false, TrustedRoot: trustedRoot, Reason: "attestation challenge does not match request nonce"}, nil
+		}
+	}
+	if blob.BoundDevicePk != "" || blob.Proof != "" {
+		pub, ok := attestationCert.PublicKey.(*ecdsa.PublicKey)
+		proof, derr := b64url.DecodeString(blob.Proof)
+		if !ok || derr != nil || !verifyP1363Signature(pub, attestationBindingInput(blob), proof) {
+			return Verdict{Verified: false, TrustedRoot: trustedRoot, Reason: "attested key proof did not verify"}, nil
+		}
+	}
 
 	// Assemble the verdict. The key is considered hardware-backed when its
 	// attestation security level is the trusted environment or StrongBox.
 	verdict := Verdict{
-		Verified:       trustedRoot,
-		SecurityLevel:  securityLevelString(parsed.securityLevel),
-		HardwareBacked: parsed.securityLevel == akaSecurityLevelTrustedEnvironment || parsed.securityLevel == akaSecurityLevelStrongBox,
-		TrustedRoot:    trustedRoot,
+		Verified:                trustedRoot,
+		SecurityLevel:           securityLevelString(parsed.securityLevel),
+		HardwareBacked:          parsed.securityLevel == akaSecurityLevelTrustedEnvironment || parsed.securityLevel == akaSecurityLevelStrongBox,
+		TrustedRoot:             trustedRoot,
+		AppPackageNames:         append([]string(nil), parsed.packageNames...),
+		AppSigningCertSHA256Hex: append([]string(nil), parsed.signingCertDigests...),
 	}
 	if parsed.rootOfTrustPresent { // boot-state fields are set only when a RootOfTrust was present
 		verdict.VerifiedBootState = verifiedBootStateString(parsed.verifiedBootState)
@@ -206,6 +229,7 @@ type rootOfTrust struct {
 // authorizationListRootOfTrustTag is the context-specific tag number under which
 // the RootOfTrust entry appears inside an authorization list.
 const authorizationListRootOfTrustTag = 704
+const authorizationListAttestationApplicationIDTag = 709
 
 // Verified-boot states reported by a RootOfTrust, describing the trust in the
 // software the device booted: a verified chain, a self-signed (user) key, an
@@ -222,9 +246,12 @@ const (
 // verified-boot state and bootloader-lock flag.
 type akaParsed struct {
 	securityLevel      int
+	challenge          []byte
 	rootOfTrustPresent bool
 	verifiedBootState  int
 	deviceLocked       bool
+	packageNames       []string
+	signingCertDigests []string
 }
 
 // parseKeyDescription unmarshals the attestation extension's KeyDescription and
@@ -242,6 +269,15 @@ func parseKeyDescription(extBytes []byte) (akaParsed, error) {
 
 	parsed := akaParsed{
 		securityLevel: int(kd.AttestationSecurityLevel),
+		challenge:     append([]byte(nil), kd.AttestationChallenge...),
+	}
+	packages, digests, hasAppID, appErr := findAttestationApplicationID(kd.SoftwareEnforced)
+	if appErr != nil {
+		return akaParsed{}, fmt.Errorf("walk softwareEnforced: %w", appErr)
+	}
+	if hasAppID {
+		parsed.packageNames = packages
+		parsed.signingCertDigests = digests
 	}
 
 	// The RootOfTrust lives in the hardware-enforced authorization list.
@@ -255,6 +291,75 @@ func parseKeyDescription(extBytes []byte) (akaParsed, error) {
 		parsed.deviceLocked = rot.DeviceLocked
 	}
 	return parsed, nil
+}
+
+func findAttestationApplicationID(authList asn1.RawValue) ([]string, []string, bool, error) {
+	if authList.Tag != asn1.TagSequence || authList.Class != asn1.ClassUniversal {
+		if authList.FullBytes == nil {
+			return nil, nil, false, nil
+		}
+		return nil, nil, false, errors.New("expected software AuthorizationList SEQUENCE")
+	}
+	body := authList.Bytes
+	for len(body) > 0 {
+		var elem asn1.RawValue
+		next, err := asn1.Unmarshal(body, &elem)
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("iterate AuthorizationList: %w", err)
+		}
+		body = next
+		if elem.Class != asn1.ClassContextSpecific || elem.Tag != authorizationListAttestationApplicationIDTag {
+			continue
+		}
+		var encoded []byte
+		if _, err := asn1.Unmarshal(elem.Bytes, &encoded); err != nil {
+			return nil, nil, false, fmt.Errorf("decode attestationApplicationId octets: %w", err)
+		}
+		packages, digests, err := parseAttestationApplicationID(encoded)
+		return packages, digests, true, err
+	}
+	return nil, nil, false, nil
+}
+
+func parseAttestationApplicationID(encoded []byte) ([]string, []string, error) {
+	var sequence asn1.RawValue
+	rest, err := asn1.Unmarshal(encoded, &sequence)
+	if err != nil || len(rest) != 0 || sequence.Tag != asn1.TagSequence {
+		return nil, nil, errors.New("malformed AttestationApplicationId sequence")
+	}
+	var packageSet asn1.RawValue
+	rest, err = asn1.Unmarshal(sequence.Bytes, &packageSet)
+	if err != nil || packageSet.Tag != asn1.TagSet {
+		return nil, nil, errors.New("malformed packageInfos set")
+	}
+	var digestSet asn1.RawValue
+	if _, err = asn1.Unmarshal(rest, &digestSet); err != nil || digestSet.Tag != asn1.TagSet {
+		return nil, nil, errors.New("malformed signatureDigests set")
+	}
+	var packages []string
+	for values := packageSet.Bytes; len(values) > 0; {
+		var info struct {
+			PackageName []byte
+			Version     int
+		}
+		var perr error
+		values, perr = asn1.Unmarshal(values, &info)
+		if perr != nil {
+			return nil, nil, fmt.Errorf("decode package info: %w", perr)
+		}
+		packages = append(packages, string(info.PackageName))
+	}
+	var digests []string
+	for values := digestSet.Bytes; len(values) > 0; {
+		var digest []byte
+		var derr error
+		values, derr = asn1.Unmarshal(values, &digest)
+		if derr != nil {
+			return nil, nil, fmt.Errorf("decode signing digest: %w", derr)
+		}
+		digests = append(digests, hex.EncodeToString(digest))
+	}
+	return packages, digests, nil
 }
 
 // findRootOfTrust scans an authorization list for its RootOfTrust entry. The

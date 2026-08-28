@@ -15,7 +15,9 @@ type Server struct {
 	state  *State
 	logger *slog.Logger
 
-	inFlight chan struct{}
+	inFlight              chan struct{}
+	attestationChallenges *attestationChallengeManager
+	requestReplay         *replayCache
 }
 
 // maxInFlightRequests caps concurrent non-health requests; excess requests get
@@ -24,9 +26,11 @@ const maxInFlightRequests = 256
 
 func NewServer(state *State, logger *slog.Logger) *Server {
 	return &Server{
-		state:    state,
-		logger:   logger,
-		inFlight: make(chan struct{}, maxInFlightRequests),
+		state:                 state,
+		logger:                logger,
+		inFlight:              make(chan struct{}, maxInFlightRequests),
+		attestationChallenges: newAttestationChallengeManager(),
+		requestReplay:         newReplayCache(),
 	}
 }
 
@@ -34,10 +38,23 @@ func NewServer(state *State, logger *slog.Logger) *Server {
 func (s *Server) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/issue", s.handleIssue)
+	mux.HandleFunc("GET /v1/attestation-challenge", s.handleAttestationChallenge)
 	mux.HandleFunc("POST /v1/redeem", s.handleRedeem)
 	mux.HandleFunc("GET /v1/creator-pubkey", s.handleCreatorPubKey)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	return s.limitInFlight(mux)
+}
+
+func (s *Server) handleAttestationChallenge(w http.ResponseWriter, _ *http.Request) {
+	challenge, expiresAt, err := s.attestationChallenges.Current(time.Now())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, AttestationChallenge{
+		Challenge: b64url.EncodeToString(challenge),
+		ExpiresAt: expiresAt.UTC().Format(time.RFC3339),
+	})
 }
 
 // limitInFlight admits at most maxInFlightRequests concurrent requests via a
@@ -98,8 +115,8 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.V != 1 {
-		writeIssueError(w, http.StatusBadRequest, "unsupported_version", "this server speaks v1")
+	if req.V != 1 && req.V != 2 {
+		writeIssueError(w, http.StatusBadRequest, "unsupported_version", "this server speaks v1 and v2")
 		return
 	}
 	if req.DevicePk == "" || req.RequestNonce == "" || req.RequestSignature == "" || req.ConfigID == "" {
@@ -116,6 +133,18 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		writeIssueError(w, http.StatusUnauthorized, "bad_signature", "request signature did not verify")
 		return
 	}
+	if req.V >= 2 {
+		nonce, nerr := b64url.DecodeString(req.RequestNonce)
+		if nerr != nil || len(nonce) != 16 {
+			writeIssueError(w, http.StatusBadRequest, "bad_request", "requestNonce must be 16 bytes")
+			return
+		}
+		replayKey := req.DevicePk + "|" + req.ConfigID + "|" + req.RequestNonce
+		if !s.requestReplay.Use(replayKey, time.Now(), 25*time.Hour) {
+			writeIssueError(w, http.StatusConflict, "replayed_request", "request nonce was already used")
+			return
+		}
+	}
 
 	entry := s.state.ConfigByID(req.ConfigID)
 	if entry == nil {
@@ -126,6 +155,17 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	attestationPolicy := entry.AttestationPolicy
 	configJson := entry.Config
 	baseTtl := resolveConfigTtl(entry)
+	if arm, hasArm := attestationPolicy.armFor(req.Attestation.Platform); hasArm &&
+		arm.Verifier == "android-key-attestation" && attestationPolicy.Mode == AttestationModeStrict {
+		if req.V < 2 || req.Attestation.BoundDevicePk != req.DevicePk || req.Attestation.Proof == "" {
+			writeIssueError(w, http.StatusUnauthorized, "attestation_failed", "Android attestation is not bound to this request key")
+			return
+		}
+		if !s.attestationChallenges.Valid(req.Attestation.Nonce, time.Now()) {
+			writeIssueError(w, http.StatusUnauthorized, "attestation_failed", "Android attestation challenge is stale or unknown")
+			return
+		}
+	}
 
 	limit := defaultIssuanceLimitPerHour
 	if pl := resolveIssuanceLimit(attestationPolicy); pl > 0 {

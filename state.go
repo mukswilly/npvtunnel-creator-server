@@ -79,6 +79,11 @@ type AttestationArm struct {
 	// AppID identifies the attesting application (TEAMID.bundle.id). Required
 	// by apple-app-attest, unused by android-key-attestation.
 	AppID string `json:"appId,omitempty"`
+
+	// AndroidPackageName and AndroidSigningCertSHA256 bind Android Key
+	// Attestation to the released app rather than merely to a stock OS.
+	AndroidPackageName       string `json:"androidPackageName,omitempty"`
+	AndroidSigningCertSHA256 string `json:"androidSigningCertSha256,omitempty"`
 }
 
 // AttestationPolicy describes the attestation requirements a requester must

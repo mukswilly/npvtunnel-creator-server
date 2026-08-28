@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"math/big"
@@ -246,17 +247,13 @@ func TestIssueRequireVerifiedBootAcceptsVerifiedDevice(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
 
-	chain, root, _ := buildSyntheticAkaChainAndRootWithBoot(t, akaSecurityLevelStrongBox, verifiedBootRoT())
-	// Point the verifier at the synthetic root so the test chain anchors.
-	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
-
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
-	req.Attestation.Platform = "ANDROID"
-	req.Attestation.Token = b64url.EncodeToString(chain)
+	root := bindSyntheticAndroidRequest(t, ts.URL, &req, akaSecurityLevelStrongBox, verifiedBootRoT())
+	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
 	body, _ := json.Marshal(req)
@@ -285,16 +282,13 @@ func TestIssueRequireVerifiedBootRejectsUnverifiedDevice(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
 
-	chain, root, _ := buildSyntheticAkaChainAndRootWithBoot(t, akaSecurityLevelStrongBox, unverifiedBootRoT())
-	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
-
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
-	req.Attestation.Platform = "ANDROID"
-	req.Attestation.Token = b64url.EncodeToString(chain)
+	root := bindSyntheticAndroidRequest(t, ts.URL, &req, akaSecurityLevelStrongBox, unverifiedBootRoT())
+	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
 	body, _ := json.Marshal(req)
@@ -324,16 +318,13 @@ func TestIssueRequireVerifiedBootRejectsAttestationWithoutRootOfTrust(t *testing
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
 
-	chain, root, _ := buildSyntheticAkaChainAndRoot(t, akaSecurityLevelStrongBox)
-	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
-
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
-	req.Attestation.Platform = "ANDROID"
-	req.Attestation.Token = b64url.EncodeToString(chain)
+	root := bindSyntheticAndroidRequest(t, ts.URL, &req, akaSecurityLevelStrongBox, nil)
+	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
 	body, _ := json.Marshal(req)
@@ -429,16 +420,13 @@ func TestIssueStrictWithVerifierRejectsSoftwareKey(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
 
-	chain, root, _ := buildSyntheticAkaChainAndRoot(t, akaSecurityLevelSoftware)
-	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
-
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
-	req.Attestation.Platform = "ANDROID"
-	req.Attestation.Token = b64url.EncodeToString(chain)
+	root := bindSyntheticAndroidRequest(t, ts.URL, &req, akaSecurityLevelSoftware, nil)
+	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
 	body, _ := json.Marshal(req)
@@ -465,16 +453,13 @@ func TestIssueStrictWithVerifierAcceptsStrongBox(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
 
-	chain, root, _ := buildSyntheticAkaChainAndRoot(t, akaSecurityLevelStrongBox)
-	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
-
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
-	req.Attestation.Platform = "ANDROID"
-	req.Attestation.Token = b64url.EncodeToString(chain)
+	root := bindSyntheticAndroidRequest(t, ts.URL, &req, akaSecurityLevelStrongBox, nil)
+	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
 	body, _ := json.Marshal(req)
@@ -503,16 +488,13 @@ func TestIssueRequireTrustedRootRejectsUntrustedRoot(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
 
-	// Leave the default production roots in place; the synthetic root is not among them.
-	chain, _, _ := buildSyntheticAkaChainAndRoot(t, akaSecurityLevelStrongBox)
-
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
-	req.Attestation.Platform = "ANDROID"
-	req.Attestation.Token = b64url.EncodeToString(chain)
+	// Leave the default production roots in place; the synthetic root is not among them.
+	bindSyntheticAndroidRequest(t, ts.URL, &req, akaSecurityLevelStrongBox, nil)
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
 	body, _ := json.Marshal(req)
@@ -540,16 +522,13 @@ func TestIssueRequireTrustedRootAcceptsTrustedRoot(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600)
 	state, _ := NewStateWithDir(dir)
 
-	chain, root, _ := buildSyntheticAkaChainAndRoot(t, akaSecurityLevelStrongBox)
-	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
-
 	ts := newTestServerWithState(t, state)
 	defer ts.Close()
 
 	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
-	req.Attestation.Platform = "ANDROID"
-	req.Attestation.Token = b64url.EncodeToString(chain)
+	root := bindSyntheticAndroidRequest(t, ts.URL, &req, akaSecurityLevelStrongBox, nil)
+	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
 	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
 
 	body, _ := json.Marshal(req)
@@ -559,6 +538,129 @@ func TestIssueRequireTrustedRootAcceptsTrustedRoot(t *testing.T) {
 		respBytes, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200 for trusted+strongbox attestation, got %d: %s", resp.StatusCode, respBytes)
 	}
+}
+
+func TestStrictAndroidAttestationRejectsCopiedAndReplayedProofs(t *testing.T) {
+	t.Run("attested key bound to another device key", func(t *testing.T) {
+		_, serverURL, devPriv, req := newStrictAndroidFixture(t, "")
+		otherPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		req.Attestation.BoundDevicePk = compressP256ToB64(t, &otherPriv.PublicKey)
+		req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
+
+		body, _ := json.Marshal(req)
+		resp := postJSONForTest(t, serverURL+"/v1/issue", body)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected copied proof to be rejected, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("stale or unknown challenge", func(t *testing.T) {
+		_, serverURL, devPriv, req := newStrictAndroidFixture(t, "")
+		req.Attestation.Nonce = b64url.EncodeToString(randomBytes(t, 32))
+		req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
+
+		body, _ := json.Marshal(req)
+		resp := postJSONForTest(t, serverURL+"/v1/issue", body)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected unknown challenge to be rejected, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("request nonce replay", func(t *testing.T) {
+		_, serverURL, _, req := newStrictAndroidFixture(t, "")
+		body, _ := json.Marshal(req)
+		first := postJSONForTest(t, serverURL+"/v1/issue", body)
+		firstBody, _ := io.ReadAll(first.Body)
+		first.Body.Close()
+		if first.StatusCode != http.StatusOK {
+			t.Fatalf("first issuance failed: %d: %s", first.StatusCode, firstBody)
+		}
+		second := postJSONForTest(t, serverURL+"/v1/issue", body)
+		defer second.Body.Close()
+		if second.StatusCode != http.StatusConflict {
+			t.Fatalf("expected replay conflict, got %d", second.StatusCode)
+		}
+	})
+
+	t.Run("wrong Android application identity", func(t *testing.T) {
+		_, serverURL, _, req := newStrictAndroidFixture(t, "com.example.repacked")
+		body, _ := json.Marshal(req)
+		resp := postJSONForTest(t, serverURL+"/v1/issue", body)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected repacked app identity to be rejected, got %d", resp.StatusCode)
+		}
+	})
+}
+
+func newStrictAndroidFixture(
+	t *testing.T,
+	expectedPackage string,
+) (*State, string, *ecdsa.PrivateKey, IssueRequest) {
+	t.Helper()
+	dir := t.TempDir()
+	packageField := ""
+	if expectedPackage != "" {
+		packageField = `,"androidPackageName":"` + expectedPackage + `"`
+	}
+	configs := `[{
+		"configId":"AAAAAAAAAAAAAAAAAAAAAA",
+		"config":{"name":"a","address":"vpn:443","type":"V2RAY","v2rayProfile":{"server":"vpn","serverPort":"443","password":"a1b2c3d4-0000-4000-8000-000000000001"}},
+		"attestationPolicy":{"mode":"strict","verifier":"android-key-attestation","requireHardwareBacked":true,"requireTrustedRoot":true` + packageField + `}
+	}]`
+	if err := os.WriteFile(filepath.Join(dir, "configs.json"), []byte(configs), 0o600); err != nil {
+		t.Fatalf("write configs: %v", err)
+	}
+	state, err := NewStateWithDir(dir)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	ts := newTestServerWithState(t, state)
+	t.Cleanup(ts.Close)
+
+	devPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	req := buildSignedIssueRequest(t, devPriv, "AAAAAAAAAAAAAAAAAAAAAA")
+	root := bindSyntheticAndroidRequest(t, ts.URL, &req, akaSecurityLevelStrongBox, verifiedBootRoT())
+	state.verifierRegistry = newVerifierRegistryWithRoots(poolWith(t, root))
+	req.RequestSignature = signWithP256(t, devPriv, issueRequestSigningInput(&req))
+	return state, ts.URL, devPriv, req
+}
+
+func bindSyntheticAndroidRequest(
+	t *testing.T,
+	serverURL string,
+	req *IssueRequest,
+	securityLevel int,
+	rot *rootOfTrust,
+) *x509.Certificate {
+	t.Helper()
+	resp, err := http.Get(serverURL + "/v1/attestation-challenge")
+	if err != nil {
+		t.Fatalf("get attestation challenge: %v", err)
+	}
+	defer resp.Body.Close()
+	var challengeResponse AttestationChallenge
+	if err := json.NewDecoder(resp.Body).Decode(&challengeResponse); err != nil {
+		t.Fatalf("decode attestation challenge: %v", err)
+	}
+	challenge, err := b64url.DecodeString(challengeResponse.Challenge)
+	if err != nil {
+		t.Fatalf("decode challenge bytes: %v", err)
+	}
+	chain, root, _, leafPrivateKey := buildSyntheticAkaChainForChallenge(
+		t, securityLevel, rot, challenge,
+	)
+	req.V = 2
+	req.Attestation = AttestationBlob{
+		Platform:      "ANDROID",
+		Token:         b64url.EncodeToString(chain),
+		Nonce:         challengeResponse.Challenge,
+		BoundDevicePk: req.DevicePk,
+	}
+	req.Attestation.Proof = signWithP256(t, leafPrivateKey, attestationBindingInput(req.Attestation))
+	return root
 }
 
 // buildSyntheticAkaChainAndRoot builds a self-contained leaf+root chain carrying
@@ -577,6 +679,18 @@ func buildSyntheticAkaChainAndRootWithBoot(
 	securityLevel int,
 	rot *rootOfTrust,
 ) ([]byte, *x509.Certificate, *x509.Certificate) {
+	chain, root, leaf, _ := buildSyntheticAkaChainForChallenge(
+		t, securityLevel, rot, []byte("test-challenge"),
+	)
+	return chain, root, leaf
+}
+
+func buildSyntheticAkaChainForChallenge(
+	t *testing.T,
+	securityLevel int,
+	rot *rootOfTrust,
+	challenge []byte,
+) ([]byte, *x509.Certificate, *x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
 	rootPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	leafPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -596,7 +710,7 @@ func buildSyntheticAkaChainAndRootWithBoot(
 	}
 	rootCert, _ := x509.ParseCertificate(rootDer)
 
-	akaExtBytes := buildAttestationExtension(t, securityLevel, rot)
+	akaExtBytes := buildAttestationExtension(t, securityLevel, rot, challenge)
 	leafTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: "Synthetic AKA Leaf"},
@@ -613,7 +727,7 @@ func buildSyntheticAkaChainAndRootWithBoot(
 	}
 	leafCert, _ := x509.ParseCertificate(leafDer)
 
-	return concatLengthPrefixed(leafDer, rootDer), rootCert, leafCert
+	return concatLengthPrefixed(leafDer, rootDer), rootCert, leafCert, leafPriv
 }
 
 // buildChainWithoutAkaExtension builds an otherwise-valid leaf+root chain whose
@@ -649,7 +763,7 @@ func buildChainWithoutAkaExtension(t *testing.T) ([]byte, *x509.Certificate) {
 // buildAttestationExtension DER-encodes a KeyDescription for the attestation
 // extension at the given security level. When rot is non-nil it is wrapped in its
 // context-specific tag and placed in the TEE-enforced authorization list.
-func buildAttestationExtension(t *testing.T, securityLevel int, rot *rootOfTrust) []byte {
+func buildAttestationExtension(t *testing.T, securityLevel int, rot *rootOfTrust, challenge []byte) []byte {
 	t.Helper()
 
 	emptySeq := asn1.RawValue{
@@ -687,6 +801,53 @@ func buildAttestationExtension(t *testing.T, securityLevel int, rot *rootOfTrust
 		}
 	}
 
+	packageInfoDER, err := asn1.Marshal(struct {
+		PackageName []byte
+		Version     int
+	}{[]byte(defaultAndroidPackageName), 1})
+	if err != nil {
+		t.Fatalf("marshal package info: %v", err)
+	}
+	packageSetDER, err := asn1.Marshal(asn1.RawValue{
+		Class: asn1.ClassUniversal, Tag: asn1.TagSet, IsCompound: true, Bytes: packageInfoDER,
+	})
+	if err != nil {
+		t.Fatalf("marshal package set: %v", err)
+	}
+	digest, _ := hex.DecodeString(defaultAndroidSigningCertSHA256)
+	digestDER, err := asn1.Marshal(digest)
+	if err != nil {
+		t.Fatalf("marshal signing digest: %v", err)
+	}
+	digestSetDER, err := asn1.Marshal(asn1.RawValue{
+		Class: asn1.ClassUniversal, Tag: asn1.TagSet, IsCompound: true, Bytes: digestDER,
+	})
+	if err != nil {
+		t.Fatalf("marshal digest set: %v", err)
+	}
+	applicationIDDER, err := asn1.Marshal(asn1.RawValue{
+		Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true,
+		Bytes: append(packageSetDER, digestSetDER...),
+	})
+	if err != nil {
+		t.Fatalf("marshal application id: %v", err)
+	}
+	applicationIDOctets, err := asn1.Marshal(applicationIDDER)
+	if err != nil {
+		t.Fatalf("marshal application id octets: %v", err)
+	}
+	applicationIDTagged, err := asn1.Marshal(asn1.RawValue{
+		Class: asn1.ClassContextSpecific, Tag: authorizationListAttestationApplicationIDTag,
+		IsCompound: true, Bytes: applicationIDOctets,
+	})
+	if err != nil {
+		t.Fatalf("marshal tagged application id: %v", err)
+	}
+	softwareEnforced := asn1.RawValue{
+		Tag: asn1.TagSequence, Class: asn1.ClassUniversal, IsCompound: true,
+		Bytes: applicationIDTagged,
+	}
+
 	type fullDesc struct {
 		AttestationVersion       int
 		AttestationSecurityLevel asn1.Enumerated
@@ -702,9 +863,9 @@ func buildAttestationExtension(t *testing.T, securityLevel int, rot *rootOfTrust
 		AttestationSecurityLevel: asn1.Enumerated(securityLevel),
 		KeymasterVersion:         4,
 		KeymasterSecurityLevel:   asn1.Enumerated(securityLevel),
-		AttestationChallenge:     []byte("test-challenge"),
+		AttestationChallenge:     challenge,
 		UniqueID:                 []byte{},
-		SoftwareEnforced:         emptySeq,
+		SoftwareEnforced:         softwareEnforced,
 		TeeEnforced:              teeEnforced,
 	}
 	out, err := asn1.Marshal(d)
